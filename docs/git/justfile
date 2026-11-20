@@ -1,0 +1,81 @@
+# Manage every repo under https://github.com/<this-folder's-name>.
+#
+#   just                 == just clone-all
+#   just clone-all      # clone any repo not present yet (idempotent)
+#   just clone-all foo   # clone only foo, bar, ...
+#   just pull           # git pull --ff-only in every local repo
+#   just status         # one line per repo: branch + dirty?
+#   just list           # all repos in the org: forks marked, [cloned] = local
+#
+# owner defaults to this folder's name; override with: OWNER=someuser just <recipe>
+# deps: just, git, gh (gh only for list / remote discovery)
+
+dir  := justfile_directory()
+jobs := "4"                       # parallel clones
+ovr  := env_var_or_default("OWNER", "")
+
+# Clone every repo under the org that isn't present yet. Forks included.
+clone-all *repos:
+  #!/bin/sh
+  set -eu
+  owner="$([ -n "{{ovr}}" ] && printf '%s' "{{ovr}}" || basename "{{dir}}")"
+
+  if [ -n "{{repos}}" ]; then
+    list="{{repos}}"
+  else
+    list="$(gh repo list "$owner" --limit 10000 --json name -q '.[].name')"
+  fi
+
+  [ -n "$list" ] || { echo "no repos to clone"; exit 0; }
+
+  printf '%s\n' $list | xargs -P {{jobs}} -n 1 -I {} sh -c '
+    if [ -d "$1/.git" ]; then
+      echo "skip   $1 (already cloned)"
+    else
+      echo "clone  $1"
+      git clone "https://github.com/$2/$1.git"
+    fi
+  ' _ {} "$owner"
+
+# Update every local repo (fails on non-ff mergeable branches).
+pull:
+  #!/bin/sh
+  set -u
+  rc=0
+  for d in */; do
+    name="${d%/}"
+    [ -d "$name/.git" ] || continue
+    if git -C "$name" pull --ff-only --quiet 2>&1; then
+      echo "pulled  $name"
+    else
+      echo "FAILED  $name"
+      rc=1
+    fi
+  done
+  exit $rc
+
+# One line per repo: branch and dirty state.
+status:
+  #!/bin/sh
+  for d in */; do
+    name="${d%/}"
+    [ -d "$name/.git" ] || continue
+    branch="$(git -C "$name" branch --show-current)"
+    if [ -n "$(git -C "$name" status --porcelain)" ]; then
+      echo "DIRTY   $name  ($branch)"
+    else
+      echo "clean   $name  ($branch)"
+    fi
+  done
+
+# All repos in the org: forks marked, [cloned] = present locally.
+list:
+  #!/bin/sh
+  set -u
+  owner="$([ -n "{{ovr}}" ] && printf '%s' "{{ovr}}" || basename "{{dir}}")"
+  gh repo list "$owner" --limit 10000 --json name,isFork,pushedAt -q '.[] | [.name, .isFork, .pushedAt] | @tsv' |
+    while IFS="$(printf '\t')" read -r name fork pushed; do
+      tag=""; [ "$fork" = "true" ] && tag=" (fork)"
+      loc=""; [ -d "$name/.git" ] && loc=" [cloned]"
+      printf '%s%s%s  (last push: %s)\n' "$name" "$tag" "$loc" "$pushed"
+    done
