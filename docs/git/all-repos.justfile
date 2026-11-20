@@ -12,7 +12,7 @@
 
 dir  := justfile_directory()
 jobs := "4"                       # parallel clones
-ovr  := env_var_or_default("OWNER", "")
+ovr  := env("OWNER", "")
 
 # Clone every repo under the org that isn't present yet. Forks included.
 clone-all *repos:

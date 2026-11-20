@@ -1,5 +1,1707 @@
+<!doctype html>
 <!--
+Requirements (original brief for this page):
 - document here in html, with left/right nav panels, with dataflow/process diagram animation/motion, the plan to setup modern/feature-packed neovim
-- should be able to have side panels to navigate files/folders/git/etc 
-- should be able to have bottom panels to open shell/terminal/etc 
+- should be able to have side panels to navigate files/folders/git/etc
+- should be able to have bottom panels to open shell/terminal/etc
 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neovim Setup Plan</title>
+<style>
+:root{
+  --bg:#f6f6f2; --surface:#ffffff; --surface-2:#eeeee8; --border:#dcdcd3; --border-strong:#bfbfb3;
+  --text:#1b1d19; --muted:#5d6057; --faint:#888b81;
+  --accent:#2c7a31; --accent-soft:#e2f0e1; --accent-ink:#ffffff;
+  --blue:#1d6fb8; --blue-soft:#e1edf9;
+  --amber:#a05f00; --amber-soft:#f8ebd3;
+  --red:#b3312a; --red-soft:#f9e3e1;
+  --code-bg:#efefe9; --code-text:#24261f;
+  --topbar-h:52px; --lw:264px; --rw:256px; --lw-cur:var(--lw); --rw-cur:var(--rw);
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --radius:10px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#101210; --surface:#171a17; --surface-2:#1f231f; --border:#2a2f2a; --border-strong:#434a43;
+    --text:#e5e8e1; --muted:#9ba196; --faint:#737970;
+    --accent:#7ccf6c; --accent-soft:#1a2a19; --accent-ink:#0c150b;
+    --blue:#72b6f5; --blue-soft:#14232f;
+    --amber:#e3b24f; --amber-soft:#2c2413;
+    --red:#f08b83; --red-soft:#2f1917;
+    --code-bg:#141714; --code-text:#dfe3da;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#101210; --surface:#171a17; --surface-2:#1f231f; --border:#2a2f2a; --border-strong:#434a43;
+  --text:#e5e8e1; --muted:#9ba196; --faint:#737970;
+  --accent:#7ccf6c; --accent-soft:#1a2a19; --accent-ink:#0c150b;
+  --blue:#72b6f5; --blue-soft:#14232f;
+  --amber:#e3b24f; --amber-soft:#2c2413;
+  --red:#f08b83; --red-soft:#2f1917;
+  --code-bg:#141714; --code-text:#dfe3da;
+}
+:root[data-l="0"]{--lw-cur:0px}
+:root[data-r="0"]{--rw-cur:0px}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--topbar-h) + 18px);-webkit-text-size-adjust:100%}
+html.motion-off{scroll-behavior:auto}
+body{margin:0;background:var(--bg);color:var(--text);font:15.5px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-underline-offset:2px}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px}
+
+/* ── top bar ─────────────────────────────────────────── */
+.topbar{position:sticky;top:0;z-index:40;height:var(--topbar-h);display:flex;align-items:center;gap:8px;padding:0 12px;
+  background:color-mix(in srgb,var(--bg) 86%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:9px;font-weight:650;letter-spacing:-.01em;white-space:nowrap;color:var(--text);text-decoration:none;margin-right:6px}
+.brand svg{flex:none}
+.top-prog{flex:1;display:flex;align-items:center;gap:10px;min-width:0;justify-content:flex-end;margin-right:4px}
+.top-track{flex:1;max-width:220px;height:6px;border-radius:99px;background:var(--surface-2);overflow:hidden}
+.top-fill{height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .4s ease}
+.top-count{font:600 12px var(--mono);color:var(--muted);white-space:nowrap}
+.ibtn{flex:none;display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface);cursor:pointer;font-size:13px;color:var(--muted)}
+.ibtn:hover{color:var(--text);border-color:var(--border-strong)}
+.ibtn[aria-pressed="true"]{color:var(--text)}
+.ibtn svg{display:block}
+.ibtn .lbl{white-space:nowrap}
+
+/* ── shell + nav panels ──────────────────────────────── */
+.shell{display:grid;grid-template-columns:var(--lw-cur) minmax(0,1fr) var(--rw-cur);transition:grid-template-columns .28s ease}
+.panel{position:sticky;top:var(--topbar-h);height:calc(100vh - var(--topbar-h));overflow:hidden;background:var(--bg)}
+.panel-in{height:100%;overflow-y:auto;padding:18px 12px 48px}
+.left .panel-in{width:var(--lw);border-right:1px solid var(--border)}
+.right .panel-in{width:var(--rw);border-left:1px solid var(--border);padding-left:16px;padding-right:16px}
+@media (min-width:860px){:root[data-l="0"] .left{visibility:hidden;transition:visibility 0s .28s}}
+@media (min-width:1180px){:root[data-r="0"] .right{visibility:hidden;transition:visibility 0s .28s}}
+.scrim{display:none;position:fixed;inset:var(--topbar-h) 0 0 0;background:rgba(0,0,0,.38);z-index:20}
+
+.nav-group{margin:0 0 20px}
+.nav-h{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);font-weight:650;padding:0 10px;margin:0 0 6px}
+.nav a{display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:8px;color:var(--muted);text-decoration:none;font-size:14px;line-height:1.3}
+.nav a:hover{background:var(--surface-2);color:var(--text)}
+.nav a.active{background:var(--surface);color:var(--text);box-shadow:0 0 0 1px var(--border),inset 3px 0 0 var(--accent)}
+.nav .n{flex:none;width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font:600 11px var(--mono);background:var(--surface-2);color:var(--muted)}
+.nav a.active .n{background:var(--bg)}
+.nav a.done .n{background:var(--accent);color:var(--accent-ink)}
+.nav .count{margin-left:auto;font:11px var(--mono);color:var(--faint)}
+
+.side-h{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);font-weight:650;margin:0 0 8px}
+.toc-title{font-weight:650;font-size:14px;margin:0 0 6px;line-height:1.3}
+.toc{list-style:none;margin:0 0 26px;padding:0;border-left:1px solid var(--border)}
+.toc a{display:block;padding:4px 0 4px 12px;margin-left:-1px;border-left:2px solid transparent;color:var(--muted);text-decoration:none;font-size:13.5px;line-height:1.35}
+.toc a:hover{color:var(--text)}
+.toc a.active{color:var(--text);border-left-color:var(--accent)}
+.toc .none{padding:4px 0 4px 12px;color:var(--faint);font-size:13px}
+.ringbox{display:flex;align-items:center;gap:14px;margin:0 0 14px}
+.ring{flex:none;transform:rotate(-90deg)}
+.ring .bg{fill:none;stroke:var(--surface-2);stroke-width:7}
+.ring .fg{fill:none;stroke:var(--accent);stroke-width:7;stroke-linecap:round;transition:stroke-dashoffset .5s ease}
+.ringtxt b{display:block;font:650 20px/1.1 var(--sans);letter-spacing:-.02em}
+.ringtxt span{font-size:12.5px;color:var(--muted)}
+.nextup{display:block;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:10px 12px;text-decoration:none;color:var(--text);font-size:13.5px;line-height:1.35;margin-bottom:10px}
+.nextup:hover{border-color:var(--border-strong)}
+.nextup small{display:block;font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin-bottom:3px}
+.linkbtn{background:none;border:0;padding:0;color:var(--faint);font-size:12.5px;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.linkbtn:hover{color:var(--text)}
+
+/* ── content ─────────────────────────────────────────── */
+main{min-width:0;padding:34px clamp(16px,4vw,48px) 120px}
+.content{max-width:840px;margin:0 auto}
+.hero{padding:6px 0 30px}
+.kicker{font:600 12px var(--mono);color:var(--accent);letter-spacing:.04em;text-transform:uppercase}
+h1{font-size:clamp(30px,4.6vw,44px);line-height:1.06;letter-spacing:-.028em;margin:8px 0 14px;font-weight:720;text-wrap:balance}
+h2{font-size:26px;letter-spacing:-.018em;line-height:1.2;margin:4px 0 12px;text-wrap:balance}
+h3{font-size:17px;margin:30px 0 8px;letter-spacing:-.005em;scroll-margin-top:calc(var(--topbar-h) + 18px)}
+p{margin:0 0 14px}
+.lede{font-size:18px;line-height:1.55;color:var(--muted);max-width:64ch;margin-bottom:18px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;gap:7px;align-items:baseline;border:1px solid var(--border);background:var(--surface);border-radius:99px;padding:4px 12px;font-size:13px}
+.chip b{font:600 10.5px var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
+section.sec{padding:0 0 40px;margin:0 0 36px;border-bottom:1px solid var(--border)}
+section.sec:last-of-type{border-bottom:0}
+ul.tight{margin:0 0 14px;padding-left:20px}
+ul.tight li{margin:0 0 6px}
+
+code{font:.88em var(--mono);background:var(--surface-2);padding:1px 5px;border-radius:5px;overflow-wrap:anywhere}
+kbd{font:600 12px var(--mono);background:var(--surface);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:6px;padding:1px 6px;white-space:nowrap;color:var(--text)}
+.code{margin:10px 0 14px;border:1px solid var(--border);border-radius:9px;background:var(--code-bg);overflow:hidden}
+.code figcaption{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:4px 5px 4px 12px;font:11.5px var(--mono);color:var(--muted);border-bottom:1px solid var(--border)}
+.code pre{margin:0;padding:12px 14px;overflow-x:auto;font:13px/1.6 var(--mono);color:var(--code-text);tab-size:2}
+.code pre code{background:none;padding:0;font:inherit;overflow-wrap:normal}
+.copy{border:1px solid transparent;background:none;border-radius:6px;padding:2px 8px;font:11.5px var(--mono);color:var(--muted);cursor:pointer}
+.copy:hover{border-color:var(--border-strong);color:var(--text)}
+.tok-c{color:var(--faint);font-style:italic}.tok-s{color:var(--accent)}.tok-k{color:var(--blue)}
+
+.tblwrap{overflow-x:auto;margin:14px 0 18px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th{font:600 11px var(--sans);text-transform:uppercase;letter-spacing:.07em;color:var(--faint);text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.k{white-space:nowrap}
+td.nw{white-space:nowrap;font-weight:600}
+.tag{display:inline-block;font:600 11px var(--mono);padding:1px 8px;border-radius:99px;white-space:nowrap}
+.tag.ok{background:var(--accent-soft);color:var(--accent)}
+.tag.gap{background:var(--amber-soft);color:var(--amber)}
+.tag.info{background:var(--blue-soft);color:var(--blue)}
+
+.callout{display:flex;gap:12px;align-items:flex-start;padding:13px 15px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);margin:14px 0 18px}
+.callout .cl{flex:none;font:600 10.5px var(--mono);text-transform:uppercase;letter-spacing:.07em;padding-top:4px;min-width:64px}
+.callout.decision{border-color:color-mix(in srgb,var(--blue) 40%,var(--border));background:var(--blue-soft)}
+.callout.decision .cl{color:var(--blue)}
+.callout.warn{border-color:color-mix(in srgb,var(--amber) 40%,var(--border));background:var(--amber-soft)}
+.callout.warn .cl{color:var(--amber)}
+.callout.gate{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--accent-soft)}
+.callout.gate .cl{color:var(--accent)}
+.callout p:last-child{margin-bottom:0}
+
+.steps{display:grid;gap:12px;margin:14px 0 18px}
+.step{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);scroll-margin-top:calc(var(--topbar-h) + 18px);min-width:0}
+.step-h{display:flex;gap:12px;align-items:flex-start;padding:13px 14px;cursor:pointer}
+.step-h input{appearance:none;-webkit-appearance:none;flex:none;width:20px;height:20px;margin:2px 0 0;border:1.5px solid var(--border-strong);border-radius:6px;background:var(--surface);cursor:pointer;display:grid;place-items:center;transition:background .15s,border-color .15s}
+.step-h input:checked{background:var(--accent);border-color:var(--accent)}
+.step-h input:checked::after{content:"";width:10px;height:6px;border:2px solid var(--accent-ink);border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
+.step-t{font-weight:620;min-width:0}
+.step-t small{display:block;font-weight:400;color:var(--muted);font-size:14px;margin-top:2px}
+.step-b{padding:0 14px 6px 46px;min-width:0}
+.step-b > :last-child{margin-bottom:10px}
+.step:has(input:checked){border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
+.step:has(input:checked) .step-t{color:var(--muted)}
+
+.xlist{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 14px}
+.xlist code{background:var(--surface-2);border:1px solid var(--border);padding:2px 8px;border-radius:99px;font-size:12.5px}
+
+.tree{margin:10px 0 16px;border:1px solid var(--border);border-radius:9px;background:var(--code-bg);padding:12px 14px;overflow-x:auto;font:13px/1.65 var(--mono);color:var(--code-text)}
+.tree i{font-style:normal;color:var(--faint)}
+.tree b{font-weight:600;color:var(--accent)}
+
+/* ── figures ─────────────────────────────────────────── */
+.fig{margin:18px 0 22px;border:1px solid var(--border);border-radius:14px;background:var(--surface);overflow:hidden}
+.fig-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 12px 9px 14px;border-bottom:1px solid var(--border);font-size:13px;color:var(--muted)}
+.fig-h b{color:var(--text);font-weight:620;margin-right:auto}
+.fig-scroll{overflow-x:auto}
+.fig svg.dia{display:block;width:100%;height:auto}
+.fig-cap{padding:11px 14px;border-top:1px solid var(--border);font-size:13.5px;line-height:1.5;color:var(--muted)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.sbtn{border:1px solid var(--border);background:var(--surface);border-radius:7px;padding:3px 10px;font-size:12.5px;cursor:pointer;color:var(--muted)}
+.sbtn:hover{color:var(--text);border-color:var(--border-strong)}
+
+/* generic diagram */
+.d-lane{fill:var(--surface-2);opacity:.55}
+.d-lane-t{font:600 11px var(--mono);fill:var(--faint);letter-spacing:.09em}
+.d-node rect{fill:var(--surface);stroke:var(--border-strong);stroke-width:1.2}
+.d-node .t{font:620 13px var(--sans);fill:var(--text)}
+.d-node .t.m{font:600 12.5px var(--mono)}
+.d-node .s{font:11px var(--mono);fill:var(--muted)}
+.d-node.b rect{stroke:var(--blue);fill:var(--blue-soft)}
+.d-node.g rect{stroke:var(--accent);fill:var(--accent-soft)}
+.d-node.a rect{stroke:var(--amber);fill:var(--amber-soft)}
+.d-edge{fill:none;stroke:var(--border-strong);stroke-width:1.4;stroke-dasharray:3 5;animation:dash 1s linear infinite}
+.d-edge.b{stroke:var(--blue)}.d-edge.g{stroke:var(--accent)}.d-edge.a{stroke:var(--amber)}
+.d-arrow{fill:var(--border-strong)}
+.pk{fill:var(--muted)}.pk.b{fill:var(--blue)}.pk.g{fill:var(--accent)}.pk.a{fill:var(--amber)}
+@keyframes dash{to{stroke-dashoffset:-16}}
+.motion-off .pk{display:none}
+.motion-off .d-edge,.motion-off .f-track{animation:none}
+
+/* process flow */
+.f-track{fill:none;stroke:var(--border-strong);stroke-width:2;stroke-dasharray:2 7;stroke-linecap:round;animation:dash2 1.1s linear infinite}
+@keyframes dash2{to{stroke-dashoffset:-18}}
+.f-done{fill:none;stroke:var(--accent);stroke-width:3;stroke-linecap:round;transition:stroke-dasharray .5s ease}
+.f-chev{fill:none;stroke:var(--faint);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.f-node{cursor:pointer;outline:none}
+.f-node rect{fill:var(--surface);stroke:var(--border-strong);stroke-width:1.3;transition:stroke .2s,fill .2s}
+.f-node .num{fill:var(--surface-2);transition:fill .2s}
+.f-node .numt{font:600 12px var(--mono);fill:var(--muted)}
+.f-node .t{font:620 13px var(--sans);fill:var(--text)}
+.f-node .s{font:11px var(--mono);fill:var(--muted)}
+.f-node:hover rect{stroke:var(--muted)}
+.f-node.active rect{stroke:var(--accent);stroke-width:2;fill:var(--accent-soft)}
+.f-node.active .num{stroke:var(--accent);stroke-width:1.6}
+.f-node.done .num{fill:var(--accent)}
+.f-node.done .numt{fill:var(--accent-ink)}
+.f-node:focus-visible rect{stroke:var(--blue);stroke-width:2.5}
+.f-token{fill:var(--accent)}
+.f-halo{fill:var(--accent);opacity:.2}
+.flow-cap{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;align-items:start;padding:14px 16px;border-top:1px solid var(--border);min-height:132px}
+.flow-cap .fk{font:600 11.5px var(--mono);color:var(--accent);text-transform:uppercase;letter-spacing:.05em}
+.flow-cap .ft{font-weight:650;font-size:17px;letter-spacing:-.01em;margin:1px 0 4px}
+.flow-cap .fd{margin:0 0 6px;font-size:14.5px;color:var(--muted)}
+.flow-cap .fg{margin:0;font-size:13.5px}
+.flow-cap .fg b{font:600 10.5px var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--accent);margin-right:6px}
+.flow-cap a{white-space:nowrap;font-size:13.5px;align-self:center}
+
+/* ── editor mock ─────────────────────────────────────── */
+.nv{--nv-lw:188px;--nv-rw:150px;--nv-bh:114px;background:#1a1b26;color:#c0caf5;font:11.5px/1.5 var(--mono);height:430px;display:flex;flex-direction:column;overflow:hidden;user-select:none;-webkit-user-select:none}
+.nv-title{flex:none;display:flex;align-items:center;gap:10px;height:27px;padding:0 10px;background:#16161e;color:#565f89;border-bottom:1px solid #0f0f14;font-size:11px;white-space:nowrap;overflow:hidden}
+.nv-dots{display:flex;gap:5px}.nv-dots i{width:9px;height:9px;border-radius:50%;background:#2f334d}
+.nv-body{flex:1;min-height:0;display:flex}
+.nv-side{flex:none;width:0;overflow:hidden;background:#16161e;transition:width .42s cubic-bezier(.3,.7,.2,1)}
+.nv-left.open{width:var(--nv-lw)}.nv-right.open{width:var(--nv-rw)}
+.nv-side-in{height:100%;display:flex;flex-direction:column}
+.nv-left .nv-side-in{width:var(--nv-lw);border-right:1px solid #292e42}
+.nv-right .nv-side-in{width:var(--nv-rw);border-left:1px solid #292e42}
+.nv-sec{flex:0 0 20px;min-height:0;overflow:hidden;transition:flex-grow .42s cubic-bezier(.3,.7,.2,1)}
+.nv-sec.open{flex-grow:1}
+.nv-sec h6{margin:0;height:20px;line-height:20px;padding:0 8px;font:600 10.5px/20px var(--mono);background:#1f2335;color:#7aa2f7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.nv-sec:not(.open) h6{color:#565f89}
+.nv-sec-b{padding:4px 8px;white-space:pre;overflow:hidden}
+.nv .tr{display:flex;justify-content:space-between;gap:6px}
+.nv .tr.sel{background:#292e42;margin:0 -8px;padding:0 8px}
+.nv .d{color:#7aa2f7}.nv .dim{color:#565f89}
+.nv .gm{font-style:normal;font-weight:600}.nv .gm.m{color:#e0af68}.nv .gm.u{color:#9ece6a}.nv .gm.e{color:#f7768e}
+.nv-center{flex:1;min-width:0;display:flex;flex-direction:column}
+.nv-tabs{flex:none;display:flex;height:22px;background:#16161e;font-size:11px;white-space:nowrap;overflow:hidden}
+.nv-tabs span{padding:0 12px;line-height:22px;color:#565f89;border-right:1px solid #0f0f14}
+.nv-tabs span.on{background:#1a1b26;color:#c0caf5;box-shadow:inset 0 2px 0 #7aa2f7}
+.nv-tabs em{font-style:normal;color:#e0af68}
+.nv-editor{flex:1;min-height:0;overflow:hidden;padding:3px 0}
+.nv .ln{display:flex;white-space:pre}
+.nv .ln.cur{background:#232637}
+.nv .no{flex:none;width:28px;text-align:right;color:#3b4261}
+.nv .ln.cur .no{color:#ff9e64}
+.nv .sg{flex:none;width:12px;text-align:center}
+.nv .sg.add{color:#9ece6a}.nv .sg.chg{color:#e0af68}
+.nv .k{color:#bb9af7}.nv .s{color:#9ece6a}.nv .t{color:#2ac3de}.nv .f{color:#7aa2f7}.nv .n{color:#ff9e64}
+.nv .vt{color:#e0af68;opacity:.85}.nv .vt.e{color:#f7768e}
+.nv .sq{text-decoration:underline wavy #f7768e;text-underline-offset:3px}
+.nv-bottom{flex:none;height:0;overflow:hidden;display:flex;background:#16161e;transition:height .42s cubic-bezier(.3,.7,.2,1);border-top:0 solid #292e42}
+.nv-bottom.open{height:var(--nv-bh);border-top-width:1px}
+.nv-pane{flex:0 0 0;min-width:0;overflow:hidden;transition:flex-grow .42s cubic-bezier(.3,.7,.2,1)}
+.nv-pane.open{flex-grow:1}
+.nv-pane + .nv-pane.open{box-shadow:inset 1px 0 0 #292e42}
+.nv-pane-in{min-width:230px}
+.nv-pane h6{margin:0;height:20px;padding:0 8px;font:600 10.5px/20px var(--mono);background:#1f2335;color:#7aa2f7;white-space:nowrap}
+.nv-pane-b{padding:4px 8px;white-space:pre}
+.nv .p{color:#9ece6a}.nv .cursor{color:#c0caf5}
+.nv:not(.static) .cursor{animation:blink 1s steps(2,start) infinite}
+@keyframes blink{to{visibility:hidden}}
+.motion-off .nv .cursor{animation:none}
+.nv-status{flex:none;display:flex;align-items:stretch;height:20px;font-size:10.5px;line-height:20px;background:#16161e;border-top:1px solid #0f0f14;white-space:nowrap;overflow:hidden}
+.nv-status span{padding:0 9px;color:#737aa2}
+.nv-status .mode{background:#7aa2f7;color:#16161e;font-weight:700}
+.nv-status .sp{flex:1}
+.nv-status .er{color:#f7768e}.nv-status .wa{color:#e0af68}
+.nv-keys{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;border-top:1px solid var(--border)}
+.keybtn{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);background:var(--surface);border-radius:9px;padding:5px 10px 5px 6px;cursor:pointer;font-size:13px;color:var(--muted)}
+.keybtn:hover{border-color:var(--border-strong);color:var(--text)}
+.keybtn[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.keybtn kbd{pointer-events:none}
+.nv-cap{min-height:44px}
+.nv-cap kbd{margin-right:6px}
+
+/* ── responsive ──────────────────────────────────────── */
+@media (max-width:1179px){
+  .shell{grid-template-columns:var(--lw-cur) minmax(0,1fr)}
+  .right{position:fixed;right:0;top:var(--topbar-h);z-index:30;width:var(--rw);transform:translateX(100%);visibility:hidden;transition:transform .25s ease,visibility 0s .25s;box-shadow:-14px 0 36px rgba(0,0,0,.2)}
+  :root[data-r="1"] .right{transform:none;visibility:visible;transition:transform .25s ease}
+  :root[data-r="1"] .scrim{display:block}
+}
+@media (max-width:859px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .left{position:fixed;left:0;top:var(--topbar-h);z-index:30;width:var(--lw);transform:translateX(-100%);visibility:hidden;transition:transform .25s ease,visibility 0s .25s;box-shadow:14px 0 36px rgba(0,0,0,.2)}
+  :root[data-l="1"] .left{transform:none;visibility:visible;transition:transform .25s ease}
+  :root[data-l="1"] .scrim{display:block}
+  .ibtn .lbl{display:none}
+  .top-track{max-width:none}
+  .step-b{padding-left:14px}
+  .flow-cap{grid-template-columns:minmax(0,1fr)}
+  .flow-cap a{align-self:start}
+}
+@media (max-width:560px){
+  .top-prog{display:none}
+  .brand{flex:1;min-width:0;font-size:14.5px}
+  .brand span{overflow:hidden;text-overflow:ellipsis}
+  .ibtn{padding:0 7px}
+  .topbar{gap:6px;padding:0 10px}
+}
+@media (max-width:640px){
+  body{font-size:15px}
+  .tblwrap table{min-width:540px}
+  .nv{--nv-lw:132px;--nv-rw:116px;--nv-bh:104px;font-size:10px;height:380px}
+  .nv .no{width:22px}
+  h2{font-size:23px}
+}
+@media (prefers-reduced-motion: reduce){
+  .shell,.nv-side,.nv-sec,.nv-bottom,.nv-pane,.top-fill{transition:none}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <button class="ibtn" id="btn-left" aria-pressed="true" aria-label="Toggle section navigation" title="Toggle section navigation">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/><rect x="2.4" y="3.4" width="3" height="9.2" rx="1" fill="currentColor" stroke="none" opacity=".55"/></svg>
+  </button>
+  <a class="brand" href="#top">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="1.5" y="2.5" width="17" height="15" rx="3" stroke="currentColor" stroke-width="1.5"/><rect x="3.4" y="4.4" width="4" height="11.2" rx="1" fill="var(--accent)"/><rect x="8.6" y="11.4" width="8" height="4.2" rx="1" fill="var(--blue)"/></svg>
+    <span>Neovim setup plan</span>
+  </a>
+  <div class="top-prog" title="Steps completed">
+    <div class="top-track"><div class="top-fill" id="top-fill"></div></div>
+    <span class="top-count" id="top-count">0 / 27</span>
+  </div>
+  <button class="ibtn" id="btn-motion" aria-pressed="true" title="Turn diagram motion on or off">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 1.8v10.4a.6.6 0 0 0 .9.5l8.3-5.2a.6.6 0 0 0 0-1L3.9 1.3a.6.6 0 0 0-.9.5z"/></svg>
+    <span class="lbl">Motion on</span>
+  </button>
+  <button class="ibtn" id="btn-theme" aria-label="Switch light or dark theme" title="Switch light / dark">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 0 0 11z" fill="currentColor" stroke="none"/></svg>
+  </button>
+  <button class="ibtn" id="btn-right" aria-pressed="true" aria-label="Toggle on-this-page panel" title="Toggle on-this-page panel">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M10 2.5v11"/><rect x="10.6" y="3.4" width="3" height="9.2" rx="1" fill="currentColor" stroke="none" opacity=".55"/></svg>
+  </button>
+</header>
+
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+
+<!-- ═════════ LEFT NAV ═════════ -->
+<nav class="panel left nav" aria-label="Sections">
+  <div class="panel-in">
+    <div class="nav-group">
+      <p class="nav-h">Plan</p>
+      <a href="#target">Target layout</a>
+      <a href="#audit">Starting point</a>
+      <a href="#approach">Approach</a>
+      <a href="#flow">Process flow</a>
+    </div>
+    <div class="nav-group">
+      <p class="nav-h">Phases</p>
+      <a href="#p0"><span class="n">0</span>Snapshot<span class="count"></span></a>
+      <a href="#p1"><span class="n">1</span>Toolchain<span class="count"></span></a>
+      <a href="#p2"><span class="n">2</span>Bootstrap<span class="count"></span></a>
+      <a href="#p3"><span class="n">3</span>Panels<span class="count"></span></a>
+      <a href="#p4"><span class="n">4</span>Languages<span class="count"></span></a>
+      <a href="#p5"><span class="n">5</span>Git<span class="count"></span></a>
+      <a href="#p6"><span class="n">6</span>Debug · Test · AI<span class="count"></span></a>
+      <a href="#p7"><span class="n">7</span>Personalize<span class="count"></span></a>
+      <a href="#p8"><span class="n">8</span>Verify &amp; commit<span class="count"></span></a>
+    </div>
+    <div class="nav-group">
+      <p class="nav-h">Reference</p>
+      <a href="#keys">Keymaps</a>
+      <a href="#files">Final files</a>
+      <a href="#auto">Automation</a>
+      <a href="#upkeep">Rollback &amp; upkeep</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ═════════ MAIN ═════════ -->
+<main>
+<div class="content">
+
+<header class="hero" id="top">
+  <div class="kicker">Plan · executed 20 Nov 2026</div>
+  <h1>A modern, IDE-style Neovim in nine phases</h1>
+  <p class="lede">Take this machine from a three-plugin Neovim 0.11 config to a full setup: file, buffer and git panels on the left, a symbol outline on the right, terminals and diagnostics along the bottom, with language servers, formatting, debugging and tests behind them. About an hour and a half by hand, and reversible throughout.</p>
+  <div class="chips">
+    <span class="chip"><b>Target</b>Neovim 0.12.6 + LazyVim 16</span>
+    <span class="chip"><b>Machine</b>macOS · Ghostty · zsh</span>
+    <span class="chip"><b>Scope</b>9 phases · 27 steps</span>
+    <span class="chip"><b>Audited</b>20 Nov 2026</span>
+  </div>
+  <div class="callout gate" style="margin:22px 0 0"><span class="cl">Status</span><div><p><strong>Set up on 20 Nov 2026.</strong> Every phase has been run on this machine. Plain <code>nvim</code> now starts the new config, and the old one is intact as <code>nvim-legacy</code>. The panels, language servers, format-on-save and git signs were checked in a live session against a sample project. Four steps are left unticked because they need you at the keyboard in a real project: drilling the panel keys, proving the language servers on your own code, walking a git change through, and your own acceptance pass. The whole setup can be rebuilt or re-checked with <code>just</code>: see <a href="#auto">Automation</a>.</p></div></div>
+</header>
+
+<!-- ───────── TARGET ───────── -->
+<section class="sec" id="target">
+  <div class="kicker">Where this ends up</div>
+  <h2>Target layout</h2>
+  <p>Every panel docks to an edge and toggles with one key chord; the buffer you are editing stays in the middle. The mock below behaves like the real thing: press the keys.</p>
+
+  <h3 id="target-mock">Interactive mock</h3>
+  <figure class="fig" id="mock-fig">
+    <div class="nv" id="nv" aria-label="Mock of the finished Neovim layout">
+      <div class="nv-title"><span class="nv-dots"><i></i><i></i><i></i></span><span>nvim — ~/dev/app</span></div>
+      <div class="nv-body">
+        <div class="nv-side nv-left"><div class="nv-side-in">
+          <div class="nv-sec" data-p="files"><h6 data-toggle="files">Neo-Tree Filesystem</h6><div class="nv-sec-b"><div class="tr d">▾ app</div><div class="tr d">  ▸ .github</div><div class="tr d">  ▾ cmd/api</div><div class="tr sel">      main.go<i class="gm m">M</i></div><div class="tr d">  ▾ internal/server</div><div class="tr">      routes.go<i class="gm u">?</i></div><div class="tr">      server.go<i class="gm m">M</i></div><div class="tr d">  ▸ deploy</div><div class="tr">    go.mod</div><div class="tr">    README.md</div></div></div>
+          <div class="nv-sec" data-p="buffers"><h6 data-toggle="buffers">Neo-Tree Buffers</h6><div class="nv-sec-b"><div class="tr sel">  main.go</div><div class="tr">  server.go<i class="gm m">●</i></div><div class="tr">  README.md</div></div></div>
+          <div class="nv-sec" data-p="git"><h6 data-toggle="git">Neo-Tree Git status</h6><div class="nv-sec-b"><div class="tr"><span><span class="gm m">M</span> cmd/api/main.go</span></div><div class="tr"><span><span class="gm m">M</span> …/server.go</span></div><div class="tr"><span><span class="gm u">?</span> …/routes.go</span></div></div></div>
+        </div></div>
+        <div class="nv-center">
+          <div class="nv-tabs"><span class="on">main.go</span><span>server.go <em>●</em></span><span>README.md</span></div>
+          <div class="nv-editor"><div class="ln"><span class="no">8</span><span class="sg"> </span><span><span class="k">type</span> <span class="t">Server</span> <span class="k">struct</span> {</span></div><div class="ln"><span class="no">9</span><span class="sg chg">▎</span><span>    addr <span class="t">string</span></span></div><div class="ln"><span class="no">10</span><span class="sg"> </span><span>    mux  *http.<span class="t">ServeMux</span></span></div><div class="ln"><span class="no">11</span><span class="sg"> </span><span>}</span></div><div class="ln"><span class="no">12</span><span class="sg"> </span><span> </span></div><div class="ln"><span class="no">13</span><span class="sg"> </span><span><span class="k">func</span> (s *<span class="t">Server</span>) <span class="f">Run</span>() <span class="t">error</span> {</span></div><div class="ln"><span class="no">14</span><span class="sg"> </span><span>    log.<span class="f">Printf</span>(<span class="s">"listening on %s"</span>, s.addr)  <span class="vt">▲ use slog</span></span></div><div class="ln"><span class="no">15</span><span class="sg"> </span><span>    <span class="k">return</span> http.<span class="f">ListenAndServe</span>(s.addr, s.mux)</span></div><div class="ln"><span class="no">16</span><span class="sg"> </span><span>}</span></div><div class="ln"><span class="no">17</span><span class="sg"> </span><span> </span></div><div class="ln"><span class="no">18</span><span class="sg add">▎</span><span><span class="k">func</span> <span class="f">main</span>() {</span></div><div class="ln"><span class="no">19</span><span class="sg add">▎</span><span>    srv := &amp;<span class="t">Server</span>{addr: <span class="s">":8080"</span>, mux: http.<span class="f">NewServeMux</span>()}</span></div><div class="ln cur"><span class="no">20</span><span class="sg add">▎</span><span>    srv.mux.<span class="f">HandleFunc</span>(<span class="s">"/healthz"</span>, <span class="sq">handleHealth</span>)  <span class="vt e">● undefined</span></span></div><div class="ln"><span class="no">21</span><span class="sg add">▎</span><span>    log.<span class="f">Fatal</span>(srv.<span class="f">Run</span>())</span></div><div class="ln"><span class="no">22</span><span class="sg add">▎</span><span>}</span></div></div>
+          <div class="nv-bottom">
+            <div class="nv-pane" data-p="term"><div class="nv-pane-in"><h6>1: zsh</h6><div class="nv-pane-b" id="nv-term"></div></div></div>
+            <div class="nv-pane" data-p="trouble"><div class="nv-pane-in"><h6>Diagnostics (Trouble)</h6><div class="nv-pane-b"><span class="d">▾ cmd/api/main.go</span> <span class="dim">2</span>
+  <span class="gm e">●</span> undefined: handleHealth <span class="dim">[20, 34]</span>
+  <span class="gm m">▲</span> use slog instead of log <span class="dim">[14, 5]</span></div></div></div>
+          </div>
+        </div>
+        <div class="nv-side nv-right"><div class="nv-side-in">
+          <div class="nv-sec open" data-p="outline"><h6 data-toggle="outline">Outline</h6><div class="nv-sec-b"><div class="tr"><span><span class="t">S</span> Server</span></div><div class="tr"><span>  <span class="dim">f</span> addr</span></div><div class="tr"><span>  <span class="dim">f</span> mux</span></div><div class="tr"><span><span class="f">ƒ</span> Server.Run</span></div><div class="tr sel"><span><span class="f">ƒ</span> main</span></div></div></div>
+        </div></div>
+      </div>
+      <div class="nv-status"><span class="mode">NORMAL</span><span>⎇ main</span><span>cmd/api/main.go</span><span class="sp"></span><span><span class="er">● 1</span> <span class="wa">▲ 1</span></span><span>go</span><span>20:34</span></div>
+    </div>
+    <div class="nv-keys" role="group" aria-label="Panel toggles">
+      <button class="keybtn" data-toggle="files" aria-pressed="false"><kbd>&lt;leader&gt;e</kbd>Files</button>
+      <button class="keybtn" data-toggle="buffers" aria-pressed="false"><kbd>&lt;leader&gt;be</kbd>Buffers</button>
+      <button class="keybtn" data-toggle="git" aria-pressed="false"><kbd>&lt;leader&gt;ge</kbd>Git</button>
+      <button class="keybtn" data-toggle="outline" aria-pressed="false"><kbd>&lt;leader&gt;cs</kbd>Outline</button>
+      <button class="keybtn" data-toggle="term" aria-pressed="false"><kbd>&lt;C-/&gt;</kbd>Terminal</button>
+      <button class="keybtn" data-toggle="trouble" aria-pressed="false"><kbd>&lt;leader&gt;xx</kbd>Diagnostics</button>
+      <button class="keybtn" data-toggle="all" aria-pressed="false"><kbd>&lt;leader&gt;ue</kbd>All panels</button>
+      <button class="keybtn" id="nv-tour"><kbd>▶</kbd>Play tour</button>
+    </div>
+    <figcaption class="fig-cap nv-cap" id="nv-cap">Leader is <kbd>Space</kbd>. Click a key to dock or hide its panel, or play the tour.</figcaption>
+  </figure>
+
+  <h3 id="target-req">Requirement → mechanism</h3>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Requirement</th><th>Met by</th><th>Toggle</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">Side panel: files &amp; folders</td><td>neo-tree <code>filesystem</code> source, pinned to the left edge</td><td class="k"><kbd>&lt;leader&gt;e</kbd></td></tr>
+      <tr><td class="nw">Side panel: git</td><td>neo-tree <code>git_status</code> source in the same sidebar; hunks in the sign column; lazygit as a float</td><td class="k"><kbd>&lt;leader&gt;ge</kbd> <kbd>&lt;leader&gt;gg</kbd></td></tr>
+      <tr><td class="nw">Side panel: “etc”</td><td>Open buffers (left), symbol outline (right), search &amp; replace (right), test summary (left)</td><td class="k"><kbd>&lt;leader&gt;be</kbd> <kbd>&lt;leader&gt;cs</kbd></td></tr>
+      <tr><td class="nw">Bottom panel: shell</td><td>Snacks terminal as a bottom split; a count gives you a second one</td><td class="k"><kbd>&lt;C-/&gt;</kbd> <kbd>2&lt;C-/&gt;</kbd></td></tr>
+      <tr><td class="nw">Bottom panel: “etc”</td><td>Trouble diagnostics, quickfix, help, test output</td><td class="k"><kbd>&lt;leader&gt;xx</kbd> <kbd>&lt;leader&gt;xQ</kbd></td></tr>
+      <tr><td class="nw">Modern, feature-packed</td><td>LazyVim 16 core: LSP, completion, Tree-sitter, format on save, linting, fuzzy picker, sessions, key hints</td><td class="k">—</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ───────── AUDIT ───────── -->
+<section class="sec" id="audit">
+  <div class="kicker">Checked on this machine · 20 Nov 2026</div>
+  <h2>Starting point</h2>
+  <p>Five real gaps: Neovim is a major version behind, the Tree-sitter CLI is missing, <code>node</code> crashes on launch, <code>rust-analyzer</code> is a stub that does not run, and nothing provides a panel layout. Everything else the plan needs is already installed.</p>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Item</th><th>Found</th><th>Status</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">Neovim</td><td>0.11.3 from the Nix profile, pinned to an old nixpkgs revision</td><td><span class="tag gap">gap</span></td><td>Upgrade to 0.12.6. nvim-treesitter only supports the latest stable release.</td></tr>
+      <tr><td class="nw">Config</td><td><code>~/.config/nvim</code>: lazy.nvim with oil, telescope (pinned to 0.1.5), neogit, diffview. One commit, plus uncommitted changes.</td><td><span class="tag info">migrate</span></td><td>Snapshot it, park it as a runnable legacy copy, build the new config in its place.</td></tr>
+      <tr><td class="nw">Tree-sitter CLI</td><td>Not installed</td><td><span class="tag gap">gap</span></td><td><code>brew install tree-sitter-cli</code>. Parsers need 0.26.1 or newer, and not the npm build.</td></tr>
+      <tr><td class="nw">fd</td><td>Not installed</td><td><span class="tag gap">minor</span></td><td><code>brew install fd</code>. The file picker falls back to ripgrep without it, more slowly.</td></tr>
+      <tr><td class="nw">Nerd Font</td><td>None installed</td><td><span class="tag info">partial</span></td><td>Ghostty draws Nerd Font glyphs itself. Only Zed’s terminal and Warp need the font.</td></tr>
+      <tr><td class="nw">$EDITOR</td><td>Not set in <code>~/.zshrc</code>, <code>~/.zshenv</code> or <code>~/.zprofile</code></td><td><span class="tag gap">minor</span></td><td>Export it so git and lazygit open Neovim.</td></tr>
+      <tr><td class="nw">Core CLIs</td><td>git 2.56, ripgrep 15.2, lazygit 0.62, gh 2.94, curl, tar, cc, make</td><td><span class="tag ok">ready</span></td><td>—</td></tr>
+      <tr><td class="nw">Node</td><td>Homebrew’s node 25.6.0 fails to start: it links against llhttp 9.3 and 9.4.3 is installed. The proto shim falls through to it because no global version is pinned.</td><td><span class="tag gap">gap</span></td><td><code>brew upgrade node</code>, plus a default Node pinned in proto. Mason needs a working npm for most web language servers.</td></tr>
+      <tr><td class="nw">Other runtimes</td><td>Go, Rust 1.99, Python 3.14</td><td><span class="tag ok">ready</span></td><td>Mason uses these to build some tools.</td></tr>
+      <tr><td class="nw">rust-analyzer</td><td><code>~/.cargo/bin/rust-analyzer</code> exists but is a rustup stub with no component behind it, so it exits with an error</td><td><span class="tag gap">gap</span></td><td>LazyVim’s Rust extra expects a working one on PATH. Mason provides it (Phase 4).</td></tr>
+      <tr><td class="nw">Other servers</td><td><code>gopls</code>, <code>nil</code>, <code>nixd</code> already on PATH</td><td><span class="tag ok">ready</span></td><td>Mason installs its own copies of the ones LazyVim manages.</td></tr>
+      <tr><td class="nw">Claude Code CLI</td><td><code>~/.local/bin/claude</code></td><td><span class="tag ok">ready</span></td><td>Used by the Claude panel in Phase 6.</td></tr>
+      <tr><td class="nw">Terminal</td><td>Ghostty (also Warp, Rex, Zed’s terminal)</td><td><span class="tag ok">ready</span></td><td>Use Ghostty: true color, undercurl, kitty keyboard protocol.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ───────── APPROACH ───────── -->
+<section class="sec" id="approach">
+  <div class="kicker">The one decision</div>
+  <h2>Approach</h2>
+  <div class="callout decision"><span class="cl">Decision</span><div><p><strong>Build on LazyVim 16 and switch on its extras</strong>, rather than growing the hand-rolled config one plugin at a time. You keep three small files of your own.</p></div></div>
+
+  <h3 id="approach-why">Why</h3>
+  <ul class="tight">
+    <li><strong>The layout is the hard part, and it is already written.</strong> LazyVim’s <code>ui.edgy</code> extra knows how to dock neo-tree, the Snacks terminal, Trouble, Outline and the test panels. Hand-rolling means owning that window-routing glue yourself.</li>
+    <li><strong>There is almost nothing to migrate.</strong> The current config is three plugin files. oil and neogit carry over unchanged; the Snacks picker replaces telescope.</li>
+    <li><strong>It is still lazy.nvim.</strong> Same <code>lua/plugins/*.lua</code> spec format you already use, and any default can be overridden or disabled from there.</li>
+    <li><strong>It is current.</strong> LazyVim 16.0.2 shipped on 8 Nov 2026 and tracks Neovim 0.12.</li>
+  </ul>
+  <p><strong>The trade-off:</strong> you inherit LazyVim’s keymaps. Two of your telescope keys change meaning (<kbd>&lt;leader&gt;fg</kbd> and <kbd>&lt;leader&gt;/</kbd>); Phase 7 deals with them.</p>
+
+  <h3 id="approach-boot">How the config loads</h3>
+  <figure class="fig">
+    <div class="fig-h"><b>Startup dataflow</b>
+      <span class="legend"><span><i style="background:var(--blue)"></i>LazyVim core</span><span><i style="background:var(--accent)"></i>extras</span><span><i style="background:var(--amber)"></i>yours</span></span>
+    </div>
+    <div class="fig-scroll"><svg class="dia" id="dia-boot" viewBox="0 0 960 300" style="min-width:740px" role="img" aria-label="Startup dataflow: nvim runs init.lua, which gives lazy.nvim plugin specs from three sources — LazyVim core, enabled extras, and your own lua/plugins files. lazy.nvim merges them, pins versions with the lockfile, and loads each plugin when an event, key, command or filetype triggers it.">
+      <defs><marker id="arr-dia-boot" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" class="d-arrow"/></marker></defs>
+    </svg></div>
+    <figcaption class="fig-cap">Specs from three places merge into one plan, and later sources override earlier ones, so a ten-line file in <code>lua/plugins/</code> can retune anything LazyVim ships. Nothing loads until its trigger fires, which is what keeps startup quick with dozens of plugins installed.</figcaption>
+  </figure>
+
+  <h3 id="approach-map">What provides what</h3>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Capability</th><th>Plugin</th><th>Comes from</th></tr></thead>
+    <tbody>
+      <tr><td>File, buffer and git sidebar</td><td>neo-tree.nvim</td><td><span class="tag ok">extra</span> <code>editor.neo-tree</code></td></tr>
+      <tr><td>Panel docking</td><td>edgy.nvim</td><td><span class="tag ok">extra</span> <code>ui.edgy</code></td></tr>
+      <tr><td>Symbol outline</td><td>outline.nvim</td><td><span class="tag ok">extra</span> <code>editor.outline</code></td></tr>
+      <tr><td>Terminal, fuzzy picker, dashboard, notifications, lazygit float</td><td>snacks.nvim</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>Diagnostics list, search &amp; replace</td><td>trouble.nvim, grug-far.nvim</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>LSP and tool installer</td><td>nvim-lspconfig, mason.nvim</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>Completion</td><td>blink.cmp</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>Syntax tree</td><td>nvim-treesitter (<code>main</code> branch)</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>Format on save, linting</td><td>conform.nvim, nvim-lint</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>Git signs and hunks</td><td>gitsigns.nvim</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>Key hints, jump motions, sessions</td><td>which-key, flash, persistence</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>Statusline, buffer tabs, command-line UI</td><td>lualine, bufferline, noice</td><td><span class="tag info">core</span></td></tr>
+      <tr><td>Debugger, test runner</td><td>nvim-dap + dap-ui, neotest</td><td><span class="tag ok">extra</span> <code>dap.core</code> <code>test.core</code></td></tr>
+      <tr><td>Claude Code in a split</td><td>claudecode.nvim</td><td><span class="tag ok">extra</span> <code>ai.claudecode</code></td></tr>
+      <tr><td>Git porcelain, side-by-side diffs</td><td>neogit, diffview.nvim</td><td><span class="tag gap">yours</span> carried over</td></tr>
+      <tr><td>Directory as an editable buffer</td><td>oil.nvim</td><td><span class="tag gap">yours</span> carried over</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ───────── FLOW ───────── -->
+<section class="sec" id="flow">
+  <div class="kicker">The route</div>
+  <h2>Process flow</h2>
+  <p>Nine phases, each ending in a check you can run. Phases 0–3 deliver the layout you asked for, 4–7 add depth, and 8 verifies and commits the result. Ticking steps off below fills in the track.</p>
+  <figure class="fig" id="flow-fig">
+    <div class="fig-h"><b>Phases</b><button class="sbtn" id="flow-play">Pause</button></div>
+    <div class="fig-scroll"><svg class="dia" id="dia-flow" viewBox="0 0 860 252" style="min-width:700px" role="group" aria-label="Process flow through the nine phases. Select a phase to see what it does."></svg></div>
+    <div class="flow-cap" id="flow-cap">
+      <div>
+        <div class="fk" id="fc-k">Phase 0 · 2 min</div>
+        <div class="ft" id="fc-t">Snapshot</div>
+        <p class="fd" id="fc-d"></p>
+        <p class="fg"><b>Exit check</b><span id="fc-g"></span></p>
+      </div>
+      <a href="#p0" id="fc-a">Open phase 0 →</a>
+    </div>
+  </figure>
+</section>
+
+<!-- ───────── PHASE 0 ───────── -->
+<section class="sec" id="p0">
+  <div class="kicker">Phase 0 · 2 min</div>
+  <h2>Snapshot &amp; set aside</h2>
+  <p>Commit the current config exactly as it is, then rename it and its data out of the way. It stays complete and runnable as <code>nvim-legacy</code>, and the new config gets built once, at its final path.</p>
+  <h3 id="p0-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p0-1">
+      <label class="step-h"><input type="checkbox" data-step="p0.1"><span class="step-t">Commit the hand-rolled config<small>It has an untracked <code>neogit.lua</code> and a modified lockfile.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">cd ~/.config/nvim
+git add -A
+git commit -m "snapshot: hand-rolled config before LazyVim"</code></pre></figure>
+      </div>
+    </div>
+    <div class="step" id="s-p0-2">
+      <label class="step-h"><input type="checkbox" data-step="p0.2"><span class="step-t">Move the old setup aside as <code>nvim-legacy</code><small>Config, data, state and cache move together, so the legacy copy keeps working.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">mv ~/.config/nvim       ~/.config/nvim-legacy
+mv ~/.local/share/nvim  ~/.local/share/nvim-legacy
+mv ~/.local/state/nvim  ~/.local/state/nvim-legacy
+mv ~/.cache/nvim        ~/.cache/nvim-legacy</code></pre></figure>
+        <p>Make sure no Neovim is running first. From here, <code>NVIM_APPNAME=nvim-legacy nvim</code> starts the old setup.</p>
+      </div>
+    </div>
+  </div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p><code>git status</code> in <code>~/.config/nvim-legacy</code> reports a clean tree, and <code>~/.config/nvim</code> no longer exists.</p></div></div>
+</section>
+
+<!-- ───────── PHASE 1 ───────── -->
+<section class="sec" id="p1">
+  <div class="kicker">Phase 1 · 10 min</div>
+  <h2>Toolchain</h2>
+  <p>Bring Neovim up to the version the plugin ecosystem now targets, install the two missing command-line tools, and fix the broken Node install.</p>
+  <h3 id="p1-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p1-1">
+      <label class="step-h"><input type="checkbox" data-step="p1.1"><span class="step-t">Upgrade Neovim 0.11.3 → 0.12.6<small>It was installed with <code>nix profile</code>, so upgrade it the same way.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">nix profile upgrade neovim   # re-resolves the pinned nixpkgs revision
+hash -r
+nvim --version | head -1     # NVIM v0.12.6</code></pre></figure>
+        <p>Prefer Homebrew to own it? <code>nix profile remove neovim &amp;&amp; brew install neovim</code> lands on the same 0.12.6.</p>
+      </div>
+    </div>
+    <div class="step" id="s-p1-2">
+      <label class="step-h"><input type="checkbox" data-step="p1.2"><span class="step-t">Install the Tree-sitter CLI and fd<small>The CLI compiles parsers. Without it, installs hang on “Compiling parser”.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">brew install tree-sitter-cli fd
+tree-sitter --version        # 0.26.1 or newer</code></pre></figure>
+      </div>
+    </div>
+    <div class="step" id="s-p1-3">
+      <label class="step-h"><input type="checkbox" data-step="p1.3"><span class="step-t">Repair Node<small><code>node</code> and <code>npm</code> die with a dyld error today, which would break most Mason installs in Phase 4.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">brew upgrade node                     # 25.6.0 → 26.x, relinked against current llhttp
+proto pin node 24.13.1 --to global    # a default for directories with no pin of their own
+node --version &amp;&amp; npm --version</code></pre></figure>
+        <p>The pin matters as much as the upgrade. Without a default, proto’s <code>npm</code> and <code>node</code> shims both fall back to Homebrew’s Node, and proto refuses to nest two fallbacks: any npm script that calls <code>node</code> fails in an unpinned directory, which is where Mason installs servers such as json-lsp.</p>
+      </div>
+    </div>
+    <div class="step" id="s-p1-4">
+      <label class="step-h"><input type="checkbox" data-step="p1.4"><span class="step-t">Install a Nerd Font for the other terminals<small>Skip if you will only ever run Neovim in Ghostty.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">brew install --cask font-jetbrains-mono-nerd-font</code></pre></figure>
+        <p>Then set the terminal font to <code>JetBrainsMono Nerd Font</code> in Zed (<code>terminal.font_family</code>) and Warp.</p>
+      </div>
+    </div>
+    <div class="step" id="s-p1-5">
+      <label class="step-h"><input type="checkbox" data-step="p1.5"><span class="step-t">Make Neovim the default editor<small>So <code>git commit</code> and lazygit’s edit action open it.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>~/.zshrc</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">export EDITOR=nvim
+export VISUAL=nvim</code></pre></figure>
+      </div>
+    </div>
+  </div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p><code>nvim --version</code> reports 0.12.x, <code>tree-sitter --version</code> is 0.26.1 or newer, and <code>fd --version</code> and <code>node --version</code> both run.</p></div></div>
+  <div class="callout warn"><span class="cl">Heads-up</span><div><p>The legacy config now runs on 0.12 as well, if you start it. Its telescope pin (0.1.5) predates that release and may complain.</p></div></div>
+</section>
+
+<!-- ───────── PHASE 2 ───────── -->
+<section class="sec" id="p2">
+  <div class="kicker">Phase 2 · 10 min</div>
+  <h2>Bootstrap LazyVim</h2>
+  <p>With the old setup parked as <code>nvim-legacy</code>, start the new config from the LazyVim starter directly in <code>~/.config/nvim</code>. Plugins and language tools then install once, at the paths they will keep.</p>
+  <h3 id="p2-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p2-1">
+      <label class="step-h"><input type="checkbox" data-step="p2.1"><span class="step-t">Clone the starter into <code>~/.config/nvim</code><small>Drop the starter’s history and begin your own.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">git clone https://github.com/LazyVim/starter ~/.config/nvim
+rm -rf ~/.config/nvim/.git
+cd ~/.config/nvim
+git init &amp;&amp; git add -A &amp;&amp; git commit -m "LazyVim starter"</code></pre></figure>
+      </div>
+    </div>
+    <div class="step" id="s-p2-2">
+      <label class="step-h"><input type="checkbox" data-step="p2.2"><span class="step-t">Start it and let the first install finish<small>The first launch installs the plugins, compiles parsers and fetches tools through Mason.</small></span></label>
+      <div class="step-b">
+        <p>Run <code>nvim</code> and wait until <code>:Lazy</code> and <code>:Mason</code> show nothing pending. Then quit and reopen once.</p>
+      </div>
+    </div>
+    <div class="step" id="s-p2-3">
+      <label class="step-h"><input type="checkbox" data-step="p2.3"><span class="step-t">Run <code>:LazyHealth</code><small>Errors are blockers. Warnings about the Perl, Ruby or Python providers are not.</small></span></label>
+    </div>
+  </div>
+  <h3 id="p2-layout">What you now have</h3>
+  <pre class="tree">~/.config/nvim/
+├── init.lua               <i>one line: require("config.lazy")</i>
+├── lazyvim.json           <i>enabled extras, written by :LazyExtras</i>
+├── lazy-lock.json         <i>exact commit of every plugin. Commit this.</i>
+└── lua/
+    ├── config/
+    │   ├── lazy.lua       <i>bootstraps lazy.nvim, imports LazyVim, then your plugins</i>
+    │   ├── options.lua    <i>your option overrides (Phase 7)</i>
+    │   ├── keymaps.lua    <i>your keymaps (Phase 7)</i>
+    │   └── autocmds.lua
+    └── plugins/           <i>one file per concern, each returns lazy.nvim specs</i>
+        └── example.lua    <i>inert sample. Safe to delete.</i></pre>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>The dashboard appears, <code>:LazyHealth</code> shows no errors, and pressing <kbd>Space</kbd> pops up the which-key menu.</p></div></div>
+</section>
+
+<!-- ───────── PHASE 3 ───────── -->
+<section class="sec" id="p3">
+  <div class="kicker">Phase 3 · 15 min · the layout you asked for</div>
+  <h2>Panels</h2>
+  <p>Three extras turn the editor into the layout from the mock. neo-tree supplies the sidebar content, outline.nvim supplies the symbol tree, and edgy.nvim decides which edge every tool window docks to.</p>
+
+  <h3 id="p3-how">How docking works</h3>
+  <p>edgy watches for new windows and routes them by filetype. With the three extras on, LazyVim registers these rules for you:</p>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Edge</th><th>Docked there</th><th>Opens with</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">Left</td><td>Neo-tree <em>Filesystem</em>, <em>Buffers</em> and <em>Git status</em>, pinned so all three are always listed and open on demand. Neotest summary.</td><td class="k"><kbd>&lt;leader&gt;e</kbd> <kbd>&lt;leader&gt;be</kbd> <kbd>&lt;leader&gt;ge</kbd></td></tr>
+      <tr><td class="nw">Bottom</td><td>Snacks terminal, Trouble, quickfix, help pages, Neotest output</td><td class="k"><kbd>&lt;C-/&gt;</kbd> <kbd>&lt;leader&gt;xx</kbd> <kbd>&lt;leader&gt;xQ</kbd></td></tr>
+      <tr><td class="nw">Right</td><td>Outline (pinned), grug-far search &amp; replace, the Claude Code terminal, the database UI (<code>:DBUI</code>)</td><td class="k"><kbd>&lt;leader&gt;cs</kbd> <kbd>&lt;leader&gt;sr</kbd></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="p3-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p3-1">
+      <label class="step-h"><input type="checkbox" data-step="p3.1"><span class="step-t">Enable the three panel extras<small>Run <code>:LazyExtras</code>, move to each entry, press <kbd>x</kbd>, then restart.</small></span></label>
+      <div class="step-b">
+        <div class="xlist"><code>editor.neo-tree</code><code>ui.edgy</code><code>editor.outline</code></div>
+        <p>Enabling <code>editor.neo-tree</code> also makes neo-tree the default explorer in place of the Snacks one, so <kbd>&lt;leader&gt;e</kbd> opens the docked tree.</p>
+      </div>
+    </div>
+    <div class="step" id="s-p3-2">
+      <label class="step-h"><input type="checkbox" data-step="p3.2"><span class="step-t">Tune sizes in <code>lua/plugins/panels.lua</code><small>The stock terminal takes 40% of the screen, and the SQL extra’s database panel opens with every toggle-all.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/panels.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">return {
+  {
+    "folke/edgy.nvim",
+    opts = function(_, opts)
+      opts.options = {
+        left = { size = 34 },
+        right = { size = 36 },
+        bottom = { size = 14 },
+      }
+      opts.exit_when_last = true -- quit when only panels remain
+      -- LazyVim docks the terminal at 40% height; 30% leaves more editor
+      for _, view in ipairs(opts.bottom or {}) do
+        if type(view) == "table" and view.ft == "snacks_terminal" then
+          view.size = { height = 0.3 }
+        end
+      end
+      -- The SQL extra pins its Database panel to the right edge, so it would open with every
+      -- "toggle all" (&lt;leader&gt;ue). Keep it docked there, but only when asked for (:DBUI).
+      for _, view in ipairs(opts.right or {}) do
+        if type(view) == "table" and view.ft == "dbui" then
+          view.pinned = false
+        end
+      end
+    end,
+  },
+  {
+    "nvim-neo-tree/neo-tree.nvim",
+    opts = {
+      filesystem = {
+        filtered_items = { hide_dotfiles = false, hide_gitignored = true },
+      },
+    },
+  },
+}</code></pre></figure>
+      </div>
+    </div>
+    <div class="step" id="s-p3-3">
+      <label class="step-h"><input type="checkbox" data-step="p3.3"><span class="step-t">Drill the toggles in a real project<small><code>nvim ~/dev/&lt;some-repo&gt;</code>, then work through the table below once.</small></span></label>
+    </div>
+  </div>
+
+  <h3 id="p3-keys">Panel keys</h3>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Key</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td class="k"><kbd>&lt;leader&gt;e</kbd> / <kbd>&lt;leader&gt;E</kbd></td><td>File tree at the project root / at the current directory</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;be</kbd> · <kbd>&lt;leader&gt;ge</kbd></td><td>Buffers section · Git status section</td></tr>
+      <tr><td class="k"><kbd>l</kbd> <kbd>h</kbd> · <kbd>a</kbd> <kbd>d</kbd> <kbd>r</kbd> <kbd>m</kbd></td><td>In the tree: open, collapse · add, delete, rename, move. <kbd>P</kbd> previews, <kbd>?</kbd> lists the rest.</td></tr>
+      <tr><td class="k"><kbd>&lt;</kbd> <kbd>&gt;</kbd></td><td>In the tree: previous / next source</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;cs</kbd></td><td>Symbol outline on the right</td></tr>
+      <tr><td class="k"><kbd>&lt;C-/&gt;</kbd></td><td>Focus the bottom terminal; from inside it, hide it. The shell keeps running.</td></tr>
+      <tr><td class="k"><kbd>2&lt;C-/&gt;</kbd></td><td>A second terminal, stacked in the same panel</td></tr>
+      <tr><td class="k"><kbd>&lt;esc&gt;&lt;esc&gt;</kbd></td><td>In a terminal: back to normal mode, to scroll and yank output</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;xx</kbd> · <kbd>&lt;leader&gt;xQ</kbd></td><td>Diagnostics · quickfix, in the bottom panel</td></tr>
+      <tr><td class="k"><kbd>&lt;C-h&gt;</kbd> <kbd>&lt;C-j&gt;</kbd> <kbd>&lt;C-k&gt;</kbd> <kbd>&lt;C-l&gt;</kbd></td><td>Move between panels and the editor, including out of a terminal</td></tr>
+      <tr><td class="k"><kbd>&lt;C-←&gt;</kbd> <kbd>&lt;C-→&gt;</kbd> <kbd>&lt;C-↑&gt;</kbd> <kbd>&lt;C-↓&gt;</kbd></td><td>Resize the focused panel</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;ue</kbd> · <kbd>&lt;leader&gt;uE</kbd></td><td>Close every panel; pressed again, reopen the pinned ones (the three tree sections and the outline) · pick a panel window to jump to</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>Tree, git section, outline, terminal and diagnostics each open and close with their key, and <kbd>&lt;leader&gt;ue</kbd> clears the screen to just the editor. That is both panel requirements met.</p></div></div>
+</section>
+
+<!-- ───────── PHASE 4 ───────── -->
+<section class="sec" id="p4">
+  <div class="kicker">Phase 4 · 15 min</div>
+  <h2>Languages</h2>
+  <p>Each language extra wires four things at once: the Tree-sitter parser, the language server (installed by Mason), a formatter and a linter. The list below matches what is actually in <code>~/dev</code>: mostly Go, TypeScript, Rust, Astro and Svelte, plus the infrastructure formats.</p>
+
+  <h3 id="p4-flow">What happens when you type and save</h3>
+  <figure class="fig">
+    <div class="fig-h"><b>Editing dataflow</b>
+      <span class="legend"><span><i style="background:var(--blue)"></i>request</span><span><i style="background:var(--accent)"></i>result</span><span><i style="background:var(--amber)"></i>on save</span></span>
+    </div>
+    <div class="fig-scroll"><svg class="dia" id="dia-edit" viewBox="0 0 960 392" style="min-width:760px" role="img" aria-label="Editing dataflow. As you type, the buffer feeds Tree-sitter, which produces highlighting, folds and text objects, and the LSP client, which exchanges requests with the language server and returns diagnostics and completion items. On save, conform formats the buffer before it is written; afterwards nvim-lint and gitsigns run against the file on disk.">
+      <defs><marker id="arr-dia-edit" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" class="d-arrow"/></marker></defs>
+    </svg></div>
+    <figcaption class="fig-cap">Typing and saving take different paths. Parsing and LSP requests run as you type; formatting runs just before the write, linting and git diffing just after. Their output lands in places the panel layout already gives you: the sign column, the bottom diagnostics list, the git sidebar.</figcaption>
+  </figure>
+
+  <h3 id="p4-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p4-1">
+      <label class="step-h"><input type="checkbox" data-step="p4.1"><span class="step-t">Enable the language extras<small><code>:LazyExtras</code>, <kbd>x</kbd> on each, restart.</small></span></label>
+      <div class="step-b">
+        <div class="xlist"><code>lang.go</code><code>lang.typescript</code><code>lang.rust</code><code>lang.astro</code><code>lang.svelte</code><code>lang.tailwind</code><code>lang.python</code><code>lang.sql</code><code>lang.yaml</code><code>lang.json</code><code>lang.toml</code><code>lang.markdown</code><code>lang.docker</code><code>lang.terraform</code><code>lang.helm</code><code>lang.nix</code><code>lang.git</code><code>formatting.prettier</code></div>
+      </div>
+    </div>
+    <div class="step" id="s-p4-2">
+      <label class="step-h"><input type="checkbox" data-step="p4.2"><span class="step-t">Let Mason finish installing<small>Open <code>:Mason</code> and wait until nothing is pending. npm failures here mean Phase 1’s Node repair was skipped.</small></span></label>
+    </div>
+    <div class="step" id="s-p4-3">
+      <label class="step-h"><input type="checkbox" data-step="p4.3"><span class="step-t">Prove it on a real file in each main language<small>Go, TypeScript and Rust at minimum.</small></span></label>
+      <div class="step-b">
+        <ul class="tight">
+          <li><kbd>K</kbd> shows hover docs and <kbd>gd</kbd> jumps to a definition.</li>
+          <li>Break the formatting, save, and watch it snap back. <code>:ConformInfo</code> names the formatter that ran.</li>
+          <li><code>:checkhealth vim.lsp</code> lists the attached client.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="step" id="s-p4-4">
+      <label class="step-h"><input type="checkbox" data-step="p4.4"><span class="step-t">Give Rust a working rust-analyzer<small>The rustup stub in <code>~/.cargo/bin</code> does not run, and LazyVim’s Rust extra will not install one.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/rust.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">return {
+  {
+    "mason-org/mason.nvim",
+    opts = { ensure_installed = { "rust-analyzer" } },
+  },
+}</code></pre></figure>
+        <p>Mason’s copy comes first on PATH inside Neovim and drives the same Homebrew <code>cargo</code> and <code>rustc</code> your shell uses, so editor and command-line builds share one <code>target</code> directory instead of invalidating each other.</p>
+      </div>
+    </div>
+  </div>
+
+  <h3 id="p4-table">What each extra wires</h3>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Language</th><th>Server</th><th>Format · lint</th><th>Also</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">Go</td><td>gopls</td><td>goimports, gofumpt · golangci-lint</td><td>delve, neotest-golang</td></tr>
+      <tr><td class="nw">TypeScript / JS</td><td>vtsls</td><td>prettier</td><td>js-debug-adapter</td></tr>
+      <tr><td class="nw">Rust</td><td>rust-analyzer through rustaceanvim. The extra does not install the server; step 4 does.</td><td>rustfmt, via the server</td><td>crates.nvim for <code>Cargo.toml</code>, codelldb</td></tr>
+      <tr><td class="nw">Astro · Svelte · Tailwind</td><td>astro, svelte, tailwindcss</td><td>prettier</td><td>—</td></tr>
+      <tr><td class="nw">Python</td><td>pyright + ruff</td><td>ruff</td><td>—</td></tr>
+      <tr><td class="nw">SQL</td><td>—</td><td>sqlfluff</td><td>vim-dadbod database UI and completion</td></tr>
+      <tr><td class="nw">YAML · Helm · Docker · Terraform</td><td>yamlls, helm_ls, dockerls, terraformls</td><td>hadolint, tflint</td><td>Schema-aware YAML and JSON</td></tr>
+      <tr><td class="nw">Nix · TOML · JSON · Markdown</td><td>nil_ls, taplo, jsonls, marksman</td><td>markdownlint-cli2</td><td>—</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>Hover, go-to-definition and format-on-save all work in a real Go, TypeScript and Rust file, and diagnostics show up under <kbd>&lt;leader&gt;xx</kbd>.</p></div></div>
+</section>
+
+<!-- ───────── PHASE 5 ───────── -->
+<section class="sec" id="p5">
+  <div class="kicker">Phase 5 · 10 min</div>
+  <h2>Git</h2>
+  <p>Most of the git workflow is already there after Phase 2. This phase carries over the two git plugins from your old config and gets the keys into your hands.</p>
+  <h3 id="p5-builtin">Already built in</h3>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Key</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td class="k"><kbd>]h</kbd> <kbd>[h</kbd></td><td>Next / previous changed hunk</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;ghp</kbd> · <kbd>&lt;leader&gt;ghs</kbd> · <kbd>&lt;leader&gt;ghr</kbd></td><td>Preview · stage · reset the hunk under the cursor</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;ghb</kbd></td><td>Blame the current line</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;gg</kbd></td><td>lazygit in a float (0.62 is installed)</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;gs</kbd> · <kbd>&lt;leader&gt;gd</kbd> · <kbd>&lt;leader&gt;gl</kbd></td><td>Pickers: status · diff hunks · log</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;gp</kbd> · <kbd>&lt;leader&gt;gi</kbd></td><td>GitHub pull requests · issues, through <code>gh</code></td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;ge</kbd></td><td>Git status section in the left sidebar</td></tr>
+    </tbody>
+  </table></div>
+  <h3 id="p5-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p5-1">
+      <label class="step-h"><input type="checkbox" data-step="p5.1"><span class="step-t">Carry over neogit and diffview<small>Lazy-loaded on their commands, on three keys LazyVim leaves free.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/git.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">return {
+  {
+    "NeogitOrg/neogit",
+    cmd = "Neogit",
+    dependencies = { "nvim-lua/plenary.nvim", "sindrets/diffview.nvim" },
+    keys = {
+      { "&lt;leader&gt;gn", "&lt;cmd&gt;Neogit&lt;cr&gt;", desc = "Neogit" },
+    },
+    opts = {},
+  },
+  {
+    "sindrets/diffview.nvim",
+    cmd = { "DiffviewOpen", "DiffviewFileHistory" },
+    keys = {
+      { "&lt;leader&gt;gv", "&lt;cmd&gt;DiffviewOpen&lt;cr&gt;", desc = "Diffview (working tree)" },
+      { "&lt;leader&gt;gV", "&lt;cmd&gt;DiffviewFileHistory %&lt;cr&gt;", desc = "Diffview (file history)" },
+    },
+  },
+}</code></pre></figure>
+        <p>diffview.nvim has had no commits since August 2024. It still works, but treat it as the first suspect if a diff view misbehaves on 0.12.</p>
+      </div>
+    </div>
+    <div class="step" id="s-p5-2">
+      <label class="step-h"><input type="checkbox" data-step="p5.2"><span class="step-t">Walk one change through<small>Edit a line, <kbd>]h</kbd> to it, <kbd>&lt;leader&gt;ghp</kbd> to preview, <kbd>&lt;leader&gt;ghs</kbd> to stage, <kbd>&lt;leader&gt;gg</kbd> to commit.</small></span></label>
+    </div>
+  </div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>A changed line shows a sign, the file appears under <kbd>&lt;leader&gt;ge</kbd>, and <kbd>&lt;leader&gt;gg</kbd> opens lazygit.</p></div></div>
+</section>
+
+<!-- ───────── PHASE 6 ───────── -->
+<section class="sec" id="p6">
+  <div class="kicker">Phase 6 · 15 min · optional layer</div>
+  <h2>Debug, test, AI</h2>
+  <p>Three more extras, each of which plugs into the panels from Phase 3. Skip any you will not use; nothing later depends on them.</p>
+  <h3 id="p6-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p6-1">
+      <label class="step-h"><input type="checkbox" data-step="p6.1"><span class="step-t">Debugger: enable <code>dap.core</code><small>nvim-dap with a UI. The Go, Rust and TypeScript extras add their adapters automatically.</small></span></label>
+      <div class="step-b"><p><kbd>&lt;leader&gt;db</kbd> toggles a breakpoint, <kbd>&lt;leader&gt;dc</kbd> runs or continues, <kbd>&lt;leader&gt;du</kbd> shows the debug UI, <kbd>&lt;leader&gt;dt</kbd> terminates.</p></div>
+    </div>
+    <div class="step" id="s-p6-2">
+      <label class="step-h"><input type="checkbox" data-step="p6.2"><span class="step-t">Tests: enable <code>test.core</code><small>neotest. The summary docks left, the output panel docks at the bottom.</small></span></label>
+      <div class="step-b"><p><kbd>&lt;leader&gt;tr</kbd> runs the nearest test, <kbd>&lt;leader&gt;tt</kbd> the file, <kbd>&lt;leader&gt;ts</kbd> toggles the summary, <kbd>&lt;leader&gt;tO</kbd> the output panel, <kbd>&lt;leader&gt;td</kbd> debugs the nearest test.</p></div>
+    </div>
+    <div class="step" id="s-p6-3">
+      <label class="step-h"><input type="checkbox" data-step="p6.3"><span class="step-t">Claude Code: enable <code>ai.claudecode</code><small>Runs the <code>claude</code> CLI in a right-hand split that can see your selection and show its edits as diffs.</small></span></label>
+      <div class="step-b"><p><kbd>&lt;leader&gt;ac</kbd> toggles it, <kbd>&lt;leader&gt;ab</kbd> adds the current buffer, <kbd>&lt;leader&gt;as</kbd> sends a visual selection, <kbd>&lt;leader&gt;aa</kbd> / <kbd>&lt;leader&gt;ad</kbd> accept or deny a proposed diff.</p></div>
+    </div>
+  </div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>A breakpoint in a Go test stops execution under <kbd>&lt;leader&gt;td</kbd>, and <kbd>&lt;leader&gt;ac</kbd> opens Claude on the right.</p></div></div>
+</section>
+
+<!-- ───────── PHASE 7 ───────── -->
+<section class="sec" id="p7">
+  <div class="kicker">Phase 7 · 10 min</div>
+  <h2>Personalize</h2>
+  <p>Most of your old <code>init.lua</code> already matches LazyVim’s defaults: line numbers, mouse, smart case, no wrap, system clipboard, split directions. Only the differences need carrying over.</p>
+  <h3 id="p7-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p7-1">
+      <label class="step-h"><input type="checkbox" data-step="p7.1"><span class="step-t">Options that differ<small>Four lines. Project formatters and <code>.editorconfig</code> still win per file.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/config/options.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">local opt = vim.opt
+opt.tabstop = 4        -- LazyVim default: 2
+opt.shiftwidth = 4     -- LazyVim default: 2
+opt.hlsearch = false   -- LazyVim keeps matches lit until &lt;esc&gt;
+opt.breakindent = true</code></pre></figure>
+      </div>
+    </div>
+    <div class="step" id="s-p7-2">
+      <label class="step-h"><input type="checkbox" data-step="p7.2"><span class="step-t">Keep your telescope muscle memory<small>Or skip this and learn the LazyVim keys in the table below.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/config/keymaps.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">local map = vim.keymap.set
+map("n", "&lt;leader&gt;fg", LazyVim.pick("live_grep"), { desc = "Grep (Root Dir)" })
+map("n", "&lt;leader&gt;fh", function() Snacks.picker.help() end, { desc = "Help Pages" })</code></pre></figure>
+        <div class="tblwrap"><table>
+          <thead><tr><th>Old key</th><th>Was</th><th>In LazyVim</th></tr></thead>
+          <tbody>
+            <tr><td class="k"><kbd>&lt;leader&gt;ff</kbd> <kbd>&lt;leader&gt;fb</kbd> <kbd>&lt;leader&gt;fr</kbd></td><td>Files, buffers, recent</td><td>Unchanged</td></tr>
+            <tr><td class="k"><kbd>&lt;leader&gt;fg</kbd></td><td>Live grep</td><td>Git files. Grep is <kbd>&lt;leader&gt;/</kbd> or <kbd>&lt;leader&gt;sg</kbd>, unless you add the remap above.</td></tr>
+            <tr><td class="k"><kbd>&lt;leader&gt;fh</kbd></td><td>Help tags</td><td><kbd>&lt;leader&gt;sh</kbd></td></tr>
+            <tr><td class="k"><kbd>&lt;leader&gt;/</kbd></td><td>Fuzzy find in buffer</td><td>Project grep. Buffer lines moved to <kbd>&lt;leader&gt;sb</kbd>.</td></tr>
+            <tr><td class="k"><kbd>-</kbd></td><td>oil: parent directory</td><td>Unchanged after the next step</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="step" id="s-p7-3">
+      <label class="step-h"><input type="checkbox" data-step="p7.3"><span class="step-t">Carry over oil.nvim<small>neo-tree is the sidebar; oil stays as the on-demand “edit this directory like a buffer” view.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/oil.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">return {
+  {
+    "stevearc/oil.nvim",
+    cmd = "Oil",
+    keys = {
+      { "-", "&lt;cmd&gt;Oil&lt;cr&gt;", desc = "Open parent directory (oil)" },
+    },
+    opts = {
+      default_file_explorer = false, -- neo-tree owns `nvim .`
+      columns = { "icon", "size", "permissions", "mtime" },
+      delete_to_trash = true,
+    },
+  },
+}</code></pre></figure>
+        <p>The one change from your old spec is <code>default_file_explorer = false</code>. With it on, oil and neo-tree both try to take over when you open a directory.</p>
+      </div>
+    </div>
+  </div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>A new Lua file indents by four, <kbd>&lt;leader&gt;fg</kbd> greps the project, and <kbd>-</kbd> opens oil on the current file’s directory.</p></div></div>
+</section>
+
+<!-- ───────── PHASE 8 ───────── -->
+<section class="sec" id="p8">
+  <div class="kicker">Phase 8 · 10 min</div>
+  <h2>Verify &amp; commit</h2>
+  <p>Run the acceptance list once, in a real project, then commit the config so that today’s state is a baseline you can always return to.</p>
+  <h3 id="p8-steps">Steps</h3>
+  <div class="steps">
+    <div class="step" id="s-p8-1">
+      <label class="step-h"><input type="checkbox" data-step="p8.1"><span class="step-t">Acceptance run<small>Every exit check from phases 2–7, once more, in one sitting.</small></span></label>
+      <div class="step-b">
+        <ul class="tight">
+          <li><code>:LazyHealth</code> shows no errors.</li>
+          <li>Files, git, outline, terminal and diagnostics panels all toggle.</li>
+          <li>LSP attaches and format-on-save works in Go, TypeScript and Rust.</li>
+          <li>A changed line shows a git sign and <kbd>&lt;leader&gt;gg</kbd> opens lazygit.</li>
+          <li>The dashboard footer shows a startup time you are happy with. <code>:Lazy profile</code> breaks it down if not.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="step" id="s-p8-2">
+      <label class="step-h"><input type="checkbox" data-step="p8.2"><span class="step-t">Commit the config<small>Including <code>lazy-lock.json</code> and <code>lazyvim.json</code>, so this exact setup can be restored.</small></span></label>
+      <div class="step-b">
+        <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">cd ~/.config/nvim
+git add -A &amp;&amp; git commit -m "panels, languages, git, debug, personal settings"</code></pre></figure>
+      </div>
+    </div>
+  </div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>Plain <code>nvim</code> starts the new setup, and <code>NVIM_APPNAME=nvim-legacy nvim</code> still starts the old one.</p></div></div>
+</section>
+
+<!-- ───────── KEYS ───────── -->
+<section class="sec" id="keys">
+  <div class="kicker">Reference</div>
+  <h2>Keymaps</h2>
+  <p>Leader is <kbd>Space</kbd>. Press it and pause: which-key lists everything, so this table is only the daily set. <kbd>&lt;leader&gt;sk</kbd> searches all keymaps.</p>
+  <h3 id="keys-find">Find &amp; navigate</h3>
+  <div class="tblwrap"><table>
+    <tbody>
+      <tr><td class="k"><kbd>&lt;leader&gt;&lt;space&gt;</kbd> · <kbd>&lt;leader&gt;ff</kbd></td><td>Find files in the project</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;/</kbd> · <kbd>&lt;leader&gt;sg</kbd></td><td>Grep the project</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;,</kbd> · <kbd>&lt;leader&gt;fr</kbd></td><td>Switch buffer · recent files</td></tr>
+      <tr><td class="k"><kbd>&lt;S-h&gt;</kbd> <kbd>&lt;S-l&gt;</kbd> · <kbd>&lt;leader&gt;bd</kbd></td><td>Previous / next buffer · close buffer</td></tr>
+      <tr><td class="k"><kbd>s</kbd> · <kbd>S</kbd></td><td>Flash: jump to any visible text · select a syntax node</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;ss</kbd> · <kbd>&lt;leader&gt;sS</kbd></td><td>Symbols in the file · in the workspace</td></tr>
+    </tbody>
+  </table></div>
+  <h3 id="keys-code">Code</h3>
+  <div class="tblwrap"><table>
+    <tbody>
+      <tr><td class="k"><kbd>gd</kbd> · <kbd>gr</kbd> · <kbd>K</kbd></td><td>Definition · references · hover</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;ca</kbd> · <kbd>&lt;leader&gt;cr</kbd> · <kbd>&lt;leader&gt;cf</kbd></td><td>Code action · rename · format</td></tr>
+      <tr><td class="k"><kbd>]d</kbd> <kbd>[d</kbd> · <kbd>&lt;leader&gt;cd</kbd></td><td>Next / previous diagnostic · show it in a float</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;sr</kbd></td><td>Search and replace across files (grug-far, docks right)</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;uf</kbd></td><td>Toggle format-on-save</td></tr>
+    </tbody>
+  </table></div>
+  <h3 id="keys-house">Housekeeping</h3>
+  <div class="tblwrap"><table>
+    <tbody>
+      <tr><td class="k"><kbd>&lt;leader&gt;l</kbd> · <code>:Mason</code> · <code>:LazyExtras</code></td><td>Plugins · language tools · LazyVim extras</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;L</kbd></td><td>LazyVim changelog</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;uC</kbd></td><td>Preview colorschemes (tokyonight is the default; catppuccin is bundled)</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;qq</kbd></td><td>Quit everything</td></tr>
+    </tbody>
+  </table></div>
+  <p>Panel keys are in <a href="#p3-keys">Phase 3</a>, git keys in <a href="#p5-builtin">Phase 5</a>, debug and test keys in <a href="#p6">Phase 6</a>.</p>
+</section>
+
+<!-- ───────── FILES ───────── -->
+<section class="sec" id="files">
+  <div class="kicker">Reference</div>
+  <h2>Final files</h2>
+  <p>What <code>~/.config/nvim</code> contains when the plan is done. Everything marked <b style="color:var(--accent)">yours</b> is written in a phase above; the rest comes from the starter.</p>
+  <pre class="tree">~/.config/nvim/
+├── init.lua
+├── lazyvim.json             <i>24 extras, written by :LazyExtras</i>
+├── lazy-lock.json           <i>commit after every good update</i>
+├── justfile                 <b>yours</b> <i>· the recipes under Automation</i>
+├── Brewfile                 <b>yours</b> <i>· command-line tools for just deps</i>
+├── scripts/                 <b>yours</b> <i>· bootstrap, doctor, smoke, update (Lua, run by Neovim)</i>
+└── lua/
+    ├── config/
+    │   ├── lazy.lua
+    │   ├── options.lua      <b>yours</b> <i>· Phase 7</i>
+    │   ├── keymaps.lua      <b>yours</b> <i>· Phase 7</i>
+    │   └── autocmds.lua
+    └── plugins/
+        ├── panels.lua       <b>yours</b> <i>· Phase 3</i>
+        ├── rust.lua         <b>yours</b> <i>· Phase 4</i>
+        ├── git.lua          <b>yours</b> <i>· Phase 5</i>
+        └── oil.lua          <b>yours</b> <i>· Phase 7</i></pre>
+  <h3 id="files-json">Expected <code>lazyvim.json</code></h3>
+  <p><code>:LazyExtras</code> maintains this file. It is shown so you can diff yours against it, or paste it in to enable everything at once.</p>
+  <figure class="code"><figcaption><span>~/.config/nvim/lazyvim.json</span><button class="copy">Copy</button></figcaption><pre><code data-lang="json">{
+  "extras": [
+    "lazyvim.plugins.extras.ai.claudecode",
+    "lazyvim.plugins.extras.dap.core",
+    "lazyvim.plugins.extras.editor.neo-tree",
+    "lazyvim.plugins.extras.editor.outline",
+    "lazyvim.plugins.extras.formatting.prettier",
+    "lazyvim.plugins.extras.lang.astro",
+    "lazyvim.plugins.extras.lang.docker",
+    "lazyvim.plugins.extras.lang.git",
+    "lazyvim.plugins.extras.lang.go",
+    "lazyvim.plugins.extras.lang.helm",
+    "lazyvim.plugins.extras.lang.json",
+    "lazyvim.plugins.extras.lang.markdown",
+    "lazyvim.plugins.extras.lang.nix",
+    "lazyvim.plugins.extras.lang.python",
+    "lazyvim.plugins.extras.lang.rust",
+    "lazyvim.plugins.extras.lang.sql",
+    "lazyvim.plugins.extras.lang.svelte",
+    "lazyvim.plugins.extras.lang.tailwind",
+    "lazyvim.plugins.extras.lang.terraform",
+    "lazyvim.plugins.extras.lang.toml",
+    "lazyvim.plugins.extras.lang.typescript",
+    "lazyvim.plugins.extras.lang.yaml",
+    "lazyvim.plugins.extras.test.core",
+    "lazyvim.plugins.extras.ui.edgy"
+  ],
+  "install_version": 8,
+  "version": 8
+}</code></pre></figure>
+</section>
+
+<!-- ───────── AUTOMATION ───────── -->
+<section class="sec" id="auto">
+  <div class="kicker">Reference</div>
+  <h2>Automation</h2>
+  <p>Phases 1 to 8 are now recipes in the config repo, run with <a href="https://github.com/casey/just"><code>just</code></a>. The config itself was already declarative (<code>lazy-lock.json</code> pins the plugins, <code>lazyvim.json</code> lists the extras); the recipes cover what was not: installing tools, waiting for parsers and language servers, and checking the result.</p>
+
+  <h3 id="auto-new">A new machine, or a rebuild</h3>
+  <figure class="code"><figcaption><span>zsh</span><button class="copy">Copy</button></figcaption><pre><code data-lang="sh">brew install just gh
+gh auth login                                        # the repo is private
+gh repo clone stnguyenn/nvim-config ~/.config/nvim
+cd ~/.config/nvim &amp;&amp; just setup</code></pre></figure>
+  <p>The config lives in a private GitHub repo, <code>stnguyenn/nvim-config</code>. On this machine <code>~/.config/nvim</code> is already a clone of it, so <code>git push</code> after a good update keeps the two in step.</p>
+
+  <h3 id="auto-recipes">Recipes</h3>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Recipe</th><th>Does</th><th>Replaces</th></tr></thead>
+    <tbody>
+      <tr><td class="k"><code>just setup</code></td><td><code>deps</code>, <code>bootstrap</code>, <code>doctor</code>, <code>smoke</code>, in order</td><td>Phases 1–8</td></tr>
+      <tr><td class="k"><code>just deps</code></td><td>Installs the tools in <code>Brewfile</code>, and Neovim 0.12 if it is missing or older. Leaves anything already installed at its version.</td><td>Phase 1</td></tr>
+      <tr><td class="k"><code>just bootstrap</code></td><td>Restores plugins to the locked commits, then installs parsers, language servers, formatters, linters and debug adapters, and waits until they are done</td><td>Phases 2–6</td></tr>
+      <tr><td class="k"><code>just doctor</code></td><td>Checks tool versions, plugins against the lockfile, parsers and Mason packages. Exits 1 on any failure.</td><td><code>:LazyHealth</code></td></tr>
+      <tr><td class="k"><code>just smoke</code></td><td>Starts the real editor in a terminal, presses the panel keys, and checks layout, language servers, format-on-save and git signs</td><td>Most of the acceptance run</td></tr>
+      <tr><td class="k"><code>just update</code></td><td>Updates plugins, parsers and tools, then runs <code>doctor</code> and <code>smoke</code></td><td>The update routine below</td></tr>
+      <tr><td class="k"><code>just rollback</code></td><td>Discards lockfile changes and puts plugins back to the committed commits</td><td><code>:Lazy restore</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>Every recipe is safe to re-run. The directory name is used as <code>NVIM_APPNAME</code>, so a second clone at <code>~/.config/nvim-test</code> has its own plugins, tools and state: <code>just bootstrap smoke</code> there tries a change without touching the real setup.</p>
+
+  <h3 id="auto-why">Why it needs scripts</h3>
+  <p>The obvious one-liner, <code>nvim --headless "+Lazy! sync" +qa</code>, quietly leaves a half-built editor. Three things went wrong with it during the setup, and each is now handled:</p>
+  <ul class="tight">
+    <li><strong>It exits too early.</strong> Parsers are still compiling and tools still downloading when Neovim quits. <code>scripts/bootstrap.lua</code> waits for them.</li>
+    <li><strong>Language servers never install.</strong> mason-lspconfig skips its automatic install in headless mode, on purpose. The script works out the list from LazyVim’s own configuration and requests them explicitly.</li>
+    <li><strong>There is nothing to test.</strong> A headless Neovim has no UI, so the panels and keymaps are never set up. <code>scripts/smoke.lua</code> runs the editor inside another Neovim’s terminal, which gives it a real one.</li>
+  </ul>
+  <p>Not automated: choosing the Nerd Font in terminals other than Ghostty, and your judgement of an update before you commit the lockfile.</p>
+</section>
+
+<!-- ───────── UPKEEP ───────── -->
+<section class="sec" id="upkeep">
+  <div class="kicker">Reference</div>
+  <h2>Rollback &amp; upkeep</h2>
+  <h3 id="upkeep-rollback">Rolling back</h3>
+  <div class="tblwrap"><table>
+    <thead><tr><th>When</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td class="nw">Back to the old setup</td><td>Run it any time with <code>NVIM_APPNAME=nvim-legacy nvim</code>. To make it the default again, rename the four new <code>nvim</code> directories out of the way and reverse the <code>mv</code> commands from Phase 0.</td></tr>
+      <tr><td class="nw">A bad config change</td><td><code>git log</code> and <code>git checkout</code> in <code>~/.config/nvim</code>. Every working state is a commit.</td></tr>
+      <tr><td class="nw">A bad plugin update</td><td><code>:Lazy restore</code> returns every plugin to the commits in <code>lazy-lock.json</code>. <code>git checkout lazy-lock.json</code> first if the update already rewrote it.</td></tr>
+    </tbody>
+  </table></div>
+  <h3 id="upkeep-routine">Routine</h3>
+  <ul class="tight">
+    <li><strong>Update deliberately.</strong> <code>just update</code> moves plugins, parsers and tools forward and then re-runs the checks; <code>just rollback</code> undoes it. Use the result for a day, then commit <code>lazy-lock.json</code>. By hand, the same thing is <kbd>&lt;leader&gt;l</kbd> then <kbd>U</kbd>, and <code>:Mason</code> then <kbd>U</kbd>.</li>
+    <li><strong>Keep Neovim current first.</strong> nvim-treesitter supports only the latest stable release, so run <code>nix profile upgrade neovim</code> before a big plugin update, not after.</li>
+    <li><strong>Read the changelog on major bumps.</strong> <kbd>&lt;leader&gt;L</kbd> opens LazyVim’s.</li>
+  </ul>
+  <h3 id="upkeep-trouble">If something misbehaves</h3>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Symptom</th><th>Look at</th></tr></thead>
+    <tbody>
+      <tr><td>Parser install hangs on “Compiling parser”</td><td>The Tree-sitter CLI is missing or older than 0.26.1. <code>:checkhealth nvim-treesitter</code>.</td></tr>
+      <tr><td>Icons render as boxes</td><td>The terminal font is not a Nerd Font (Phase 1, step 4). Ghostty needs nothing.</td></tr>
+      <tr><td><kbd>&lt;C-/&gt;</kbd> does nothing</td><td>The terminal is not sending the key. LazyVim also binds <kbd>&lt;C-_&gt;</kbd> for that case; <kbd>&lt;leader&gt;ft</kbd> always works.</td></tr>
+      <tr><td>No hover or completion in a file</td><td><code>:checkhealth vim.lsp</code> shows whether a server attached; <code>:Mason</code> shows whether it installed.</td></tr>
+      <tr><td>A panel opens in the wrong place</td><td><kbd>&lt;leader&gt;ue</kbd> twice re-docks the pinned panels. Persistent cases are a missing rule in <code>panels.lua</code>.</td></tr>
+      <tr><td><code>:checkhealth</code> shows errors under <em>snacks</em> or <em>lazy</em></td><td>Expected today, and optional. Snacks’ image preview wants ImageMagick, Ghostscript, a LaTeX engine and the Mermaid CLI; lazy.nvim reports a missing luarocks that no installed plugin needs.</td></tr>
+      <tr><td>Language servers missing after a scripted install</td><td>Mason only auto-installs servers in an interactive session. <code>just bootstrap</code> requests them explicitly.</td></tr>
+      <tr><td><code>:Mason</code> fails on json-lsp with a proto <code>fallback_loop</code> error</td><td>Not a Neovim problem: in any directory without a pinned Node, an npm script that calls <code>node</code> fails, because proto’s shims cannot be nested when they fall back to Homebrew’s Node. Fixed here on 20 Nov 2026 by pinning a default (<code>proto pin node 24.13.1 --to global</code>). If the pin is ever removed, <code>just doctor</code> reports it as <em>node under npm</em>, and <code>just bootstrap</code> / <code>just update</code> work around it.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+</div>
+</main>
+
+<!-- ═════════ RIGHT NAV ═════════ -->
+<aside class="panel right" aria-label="On this page and progress">
+  <div class="panel-in">
+    <p class="side-h">On this page</p>
+    <p class="toc-title" id="toc-title">Target layout</p>
+    <ul class="toc" id="toc"></ul>
+
+    <p class="side-h">Progress</p>
+    <div class="ringbox">
+      <svg class="ring" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><circle class="bg" cx="32" cy="32" r="26"/><circle class="fg" id="ring-fg" cx="32" cy="32" r="26" stroke-dasharray="163.4" stroke-dashoffset="163.4"/></svg>
+      <div class="ringtxt"><b id="ring-n">0 / 27</b><span id="ring-s">steps done</span></div>
+    </div>
+    <a class="nextup" id="nextup" href="#p0"><small>Next up</small><span id="nextup-t">Commit the hand-rolled config</span></a>
+    <button class="linkbtn" id="reset">Reset progress</button>
+  </div>
+</aside>
+
+</div>
+
+<script>
+(function(){
+'use strict';
+const $=(s,r)=>(r||document).querySelector(s);
+const $$=(s,r)=>Array.from((r||document).querySelectorAll(s));
+const root=document.documentElement;
+const NS='http://www.w3.org/2000/svg';
+const store={
+  get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v)}catch(e){return d}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+};
+function el(tag,attrs,parent,text){
+  const e=document.createElementNS(NS,tag);
+  for(const k in attrs) e.setAttribute(k,attrs[k]);
+  if(text!=null) e.textContent=text;
+  if(parent) parent.appendChild(e);
+  return e;
+}
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+
+/* ── theme ─────────────────────────────── */
+let theme=store.get('nvplan.theme',null);
+if(theme) root.setAttribute('data-theme',theme);
+$('#btn-theme').addEventListener('click',()=>{
+  const dark=theme?theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;
+  theme=dark?'light':'dark';
+  root.setAttribute('data-theme',theme);
+  store.set('nvplan.theme',theme);
+});
+
+/* ── motion ────────────────────────────── */
+let motion=store.get('nvplan.motion',!matchMedia('(prefers-reduced-motion: reduce)').matches);
+const onMotion=[];
+function applyMotion(){
+  root.classList.toggle('motion-off',!motion);
+  const b=$('#btn-motion');
+  b.setAttribute('aria-pressed',String(motion));
+  $('.lbl',b).textContent=motion?'Motion on':'Motion off';
+  $$('svg.dia').forEach(s=>{try{motion?s.unpauseAnimations():s.pauseAnimations()}catch(e){}});
+  onMotion.forEach(f=>f(motion));
+}
+$('#btn-motion').addEventListener('click',()=>{motion=!motion;store.set('nvplan.motion',motion);applyMotion()});
+
+/* ── page nav panels ───────────────────── */
+const mqSmall=matchMedia('(max-width: 859px)'), mqMid=matchMedia('(max-width: 1179px)');
+function setPanel(side,on){
+  root.setAttribute('data-'+side,on?'1':'0');
+  $(side==='l'?'#btn-left':'#btn-right').setAttribute('aria-pressed',String(on));
+}
+const isOpen=side=>root.getAttribute('data-'+side)==='1';
+function panelDefaults(){setPanel('l',!mqSmall.matches);setPanel('r',!mqMid.matches)}
+panelDefaults();
+mqSmall.addEventListener('change',panelDefaults);
+mqMid.addEventListener('change',panelDefaults);
+$('#btn-left').addEventListener('click',()=>{setPanel('l',!isOpen('l'));if(mqSmall.matches&&isOpen('l'))setPanel('r',false)});
+$('#btn-right').addEventListener('click',()=>{setPanel('r',!isOpen('r'));if(mqSmall.matches&&isOpen('r'))setPanel('l',false)});
+$('#scrim').addEventListener('click',()=>{if(mqSmall.matches)setPanel('l',false);if(mqMid.matches)setPanel('r',false)});
+document.addEventListener('click',e=>{
+  const a=e.target.closest('.panel a[href^="#"]');
+  if(!a) return;
+  if(mqSmall.matches) setPanel('l',false);
+  if(mqMid.matches) setPanel('r',false);
+});
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  if(mqSmall.matches) setPanel('l',false);
+  if(mqMid.matches) setPanel('r',false);
+});
+
+/* ── code blocks: highlight + copy ─────── */
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const KW=/\b(return|local|function|end|for|in|do|if|then|else|true|false|nil|and|or|not)\b/g;
+function hl(code,lang){
+  const cm=lang==='lua'?'--':(lang==='sh'?'#':null);
+  return code.split('\n').map(line=>{
+    let out='',buf='',i=0;
+    const flush=()=>{
+      if(!buf) return;
+      let t=esc(buf);
+      if(lang==='lua') t=t.replace(KW,'<span class="tok-k">$1</span>');
+      out+=t;buf='';
+    };
+    while(i<line.length){
+      const ch=line[i];
+      if(cm&&line.startsWith(cm,i)&&(lang!=='sh'||i===0||/\s/.test(line[i-1]))){
+        flush();out+='<span class="tok-c">'+esc(line.slice(i))+'</span>';i=line.length;break;
+      }
+      if(ch==='"'||ch==="'"){
+        let j=i+1;
+        while(j<line.length&&line[j]!==ch){if(line[j]==='\\')j++;j++}
+        flush();out+='<span class="tok-s">'+esc(line.slice(i,Math.min(j+1,line.length)))+'</span>';i=j+1;continue;
+      }
+      buf+=ch;i++;
+    }
+    flush();return out;
+  }).join('\n');
+}
+$$('pre code[data-lang]').forEach(c=>{c.dataset.raw=c.textContent;c.innerHTML=hl(c.textContent,c.dataset.lang)});
+$$('.copy').forEach(b=>b.addEventListener('click',async()=>{
+  const code=$('code',b.closest('.code'));
+  const text=code.dataset.raw||code.textContent;
+  let ok=false;
+  try{await navigator.clipboard.writeText(text);ok=true}catch(e){
+    try{const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');ta.remove()}catch(_){}
+  }
+  b.textContent=ok?'Copied':'Select + copy';
+  setTimeout(()=>{b.textContent='Copy'},1400);
+}));
+
+/* ── generic dataflow diagrams ─────────── */
+function buildDiagram(svg,spec){
+  const id=svg.id, N=spec.nodes;
+  const gL=el('g',{},svg), gE=el('g',{},svg), gP=el('g',{},svg), gN=el('g',{},svg);
+  (spec.lanes||[]).forEach(l=>{
+    el('rect',{x:l.x,y:l.y,width:l.w,height:l.h,rx:12,class:'d-lane'},gL);
+    el('text',{x:l.x+14,y:l.y+20,class:'d-lane-t'},gL,l.t);
+  });
+  for(const k in N){
+    const n=N[k], g=el('g',{class:'d-node '+(n.c||'')},gN), cx=n.x+n.w/2, cy=n.y+n.h/2;
+    el('rect',{x:n.x,y:n.y,width:n.w,height:n.h,rx:9},g);
+    const tc='t'+(n.mono?' m':'');
+    if(n.s){
+      el('text',{x:cx,y:cy-3,'text-anchor':'middle',class:tc},g,n.t);
+      el('text',{x:cx,y:cy+13,'text-anchor':'middle',class:'s'},g,n.s);
+    }else el('text',{x:cx,y:cy+4.5,'text-anchor':'middle',class:tc},g,n.t);
+  }
+  spec.edges.forEach((e,i)=>{
+    const a=N[e[0]], b=N[e[1]], o=e[2]||{};
+    let x1,y1,x2,y2;
+    if(o.back){x1=a.x;x2=b.x+b.w}else{x1=a.x+a.w;x2=b.x}
+    y1=a.y+a.h/2+(o.oy1!=null?o.oy1:(o.oy||0));
+    y2=b.y+b.h/2+(o.oy2!=null?o.oy2:(o.oy||0));
+    const m=(x1+x2)/2;
+    const d='M'+x1+' '+y1+' C'+m+' '+y1+' '+m+' '+y2+' '+x2+' '+y2;
+    el('path',{d:d,class:'d-edge '+(o.c||''),'marker-end':'url(#arr-'+id+')'},gE);
+    const pk=el('circle',{r:3.6,class:'pk '+(o.c||'')},gP);
+    el('animateMotion',{dur:(o.dur||1.9)+'s',begin:'-'+((i*0.37)%1.7).toFixed(2)+'s',repeatCount:'indefinite',path:d},pk);
+  });
+}
+
+buildDiagram($('#dia-boot'),{
+  nodes:{
+    nvim:{x:14,y:128,w:84,h:44,t:'nvim',mono:1},
+    init:{x:132,y:120,w:134,h:60,t:'init.lua',s:'→ config/lazy.lua',mono:1},
+    core:{x:312,y:22,w:184,h:58,t:'LazyVim core',s:'≈30 plugin specs',c:'b'},
+    extras:{x:312,y:121,w:184,h:58,t:'Extras',s:'lazyvim.json',c:'g'},
+    yours:{x:312,y:220,w:184,h:58,t:'lua/plugins/*.lua',s:'your specs + overrides',c:'a',mono:1},
+    lazy:{x:544,y:108,w:158,h:84,t:'lazy.nvim',s:'merge · lock versions'},
+    ev:{x:752,y:44,w:66,h:34,t:'event',mono:1},
+    keys:{x:752,y:102,w:66,h:34,t:'keys',mono:1},
+    cmd:{x:752,y:164,w:66,h:34,t:'cmd',mono:1},
+    ft:{x:752,y:222,w:66,h:34,t:'ft',mono:1},
+    ready:{x:858,y:118,w:92,h:64,t:'Editor',s:'on demand'}
+  },
+  edges:[
+    ['nvim','init'],
+    ['init','core',{oy1:-14,c:'b'}],['init','extras',{c:'g'}],['init','yours',{oy1:14,c:'a'}],
+    ['core','lazy',{oy2:-22,c:'b'}],['extras','lazy',{c:'g'}],['yours','lazy',{oy2:22,c:'a'}],
+    ['lazy','ev',{oy1:-24}],['lazy','keys',{oy1:-8}],['lazy','cmd',{oy1:8}],['lazy','ft',{oy1:24}],
+    ['ev','ready',{oy2:-18}],['keys','ready',{oy2:-6}],['cmd','ready',{oy2:6}],['ft','ready',{oy2:18}]
+  ]
+});
+
+buildDiagram($('#dia-edit'),{
+  lanes:[{x:8,y:8,w:944,h:222,t:'AS YOU TYPE'},{x:8,y:242,w:944,h:142,t:'ON SAVE   :w'}],
+  nodes:{
+    key:{x:24,y:104,w:98,h:44,t:'Keystroke'},
+    buf:{x:162,y:104,w:92,h:44,t:'Buffer'},
+    ts:{x:304,y:44,w:140,h:52,t:'Tree-sitter',s:'syntax tree'},
+    tsout:{x:500,y:44,w:254,h:52,t:'Highlight · folds · text objects',c:'g'},
+    lsp:{x:304,y:150,w:140,h:52,t:'LSP client',s:'built into Neovim'},
+    srv:{x:500,y:150,w:204,h:52,t:'Language server',s:'gopls · rust-analyzer · vtsls'},
+    diag:{x:762,y:112,w:178,h:48,t:'Diagnostics',s:'signs + bottom panel',c:'g'},
+    cmp:{x:762,y:170,w:178,h:48,t:'Completion',s:'blink.cmp menu',c:'g'},
+    w:{x:24,y:291,w:98,h:44,t:':w',mono:1},
+    fmt:{x:162,y:287,w:196,h:52,t:'conform.nvim',s:'format · gofumpt, prettier'},
+    disk:{x:404,y:291,w:116,h:44,t:'File on disk'},
+    lint:{x:572,y:256,w:196,h:48,t:'nvim-lint',s:'golangci-lint → diagnostics'},
+    gs:{x:572,y:322,w:196,h:48,t:'gitsigns',s:'diff against the index'},
+    out:{x:806,y:322,w:134,h:48,t:'Sign column',s:'+ Git sidebar',c:'a'}
+  },
+  edges:[
+    ['key','buf',{c:'b',dur:1.2}],
+    ['buf','ts',{c:'b'}],['buf','lsp',{c:'b'}],
+    ['ts','tsout',{c:'g'}],
+    ['lsp','srv',{oy:-9,c:'b',dur:1.4}],['srv','lsp',{oy:9,c:'g',back:1,dur:1.4}],
+    ['srv','diag',{oy1:-8,c:'g'}],['srv','cmp',{oy1:8,c:'g'}],
+    ['w','fmt',{c:'a',dur:1.2}],['fmt','disk',{c:'a',dur:1.2}],
+    ['disk','lint',{oy1:-8,c:'a'}],['disk','gs',{oy1:8,c:'a'}],
+    ['gs','out',{c:'a',dur:1.2}]
+  ]
+});
+
+/* ── process flow ──────────────────────── */
+const PH=[
+  {id:'p0',n:'0',t:'Snapshot',time:'2 min',d:'Commit the current ~/.config/nvim exactly as it is, then move it and its data aside. It stays complete and runnable as nvim-legacy.',g:'The legacy repo is clean and ~/.config/nvim is free.'},
+  {id:'p1',n:'1',t:'Toolchain',time:'10 min',d:'Upgrade Neovim 0.11.3 → 0.12.6, install the Tree-sitter CLI and fd, repair the broken Node install, sort out the font and $EDITOR.',g:'nvim reports 0.12.x, tree-sitter is 0.26.1 or newer, node --version runs.'},
+  {id:'p2',n:'2',t:'Bootstrap',time:'10 min',d:'Start the new config from the LazyVim starter, directly in ~/.config/nvim, and let the first install finish.',g:':LazyHealth shows no errors.'},
+  {id:'p3',n:'3',t:'Panels',time:'15 min',d:'Turn on neo-tree, edgy and outline. Files, buffers and git dock left, symbols right, terminal and diagnostics along the bottom.',g:'Every panel toggles with its key; <leader>ue hides them all.'},
+  {id:'p4',n:'4',t:'Languages',time:'15 min',d:'Enable the extras for Go, TypeScript, Rust, Astro, Svelte and the infrastructure formats. Each wires parser, server, formatter and linter.',g:'Hover, go-to-definition and format-on-save work in a real file.'},
+  {id:'p5',n:'5',t:'Git',time:'10 min',d:'Gitsigns, lazygit and the git pickers are built in. Carry over neogit and diffview from the old config.',g:'A changed line shows a sign; <leader>gg opens lazygit.'},
+  {id:'p6',n:'6',t:'Debug/Test/AI',time:'15 min',d:'Optional layer: nvim-dap with a UI, neotest, and Claude Code in a side split.',g:'A breakpoint stops a test; <leader>ac opens Claude.'},
+  {id:'p7',n:'7',t:'Personalize',time:'10 min',d:'Bring over the few options and keys that differ from LazyVim defaults, plus oil.nvim.',g:'Indent is 4, <leader>fg greps, - opens oil.'},
+  {id:'p8',n:'8',t:'Verify',time:'10 min',d:'Run the acceptance list once in a real project, then commit the config as the baseline.',g:'Plain nvim starts the new setup; nvim-legacy still starts the old one.'},
+  {id:'upkeep',n:'★',t:'Daily driver',time:'ongoing',d:'Update on your own schedule. lazy-lock.json makes every update reversible.',g:'The lockfile is committed after each good update.'}
+];
+const flow=(function(){
+  const svg=$('#dia-flow');
+  const R1=64,R2=188,X=[80,255,430,605,780];
+  const pos=[[X[0],R1],[X[1],R1],[X[2],R1],[X[3],R1],[X[4],R1],[X[4],R2],[X[3],R2],[X[2],R2],[X[1],R2],[X[0],R2]];
+  const stops=[0,175,350,525,700,824,999,1174,1349,1524];
+  const TOTAL=1524, d='M80 '+R1+' H780 V'+R2+' H80';
+  el('path',{d:d,class:'f-track'},svg);
+  const done=el('path',{d:d,class:'f-done','stroke-dasharray':'0 '+TOTAL},svg);
+  // chevrons between nodes
+  for(let i=0;i<pos.length-1;i++){
+    const a=pos[i],b=pos[i+1],mx=(a[0]+b[0])/2,my=(a[1]+b[1])/2;
+    const dx=Math.sign(b[0]-a[0]),dy=Math.sign(b[1]-a[1]);
+    const p=dy?('M'+(mx-4)+' '+(my-3)+' L'+mx+' '+(my+3)+' L'+(mx+4)+' '+(my-3)):('M'+(mx-3*dx)+' '+(my-4)+' L'+(mx+3*dx)+' '+my+' L'+(mx-3*dx)+' '+(my+4));
+    el('path',{d:p,class:'f-chev'},svg);
+  }
+  // the token is drawn under the nodes: it shows in the gaps, the node highlight shows the dwell
+  const halo=el('circle',{r:13,class:'f-halo'},svg), tok=el('circle',{r:5.5,class:'f-token'},svg);
+  const W=150,H=58,nodes=[];
+  PH.forEach((p,i)=>{
+    const cx=pos[i][0],cy=pos[i][1];
+    const g=el('g',{class:'f-node',tabindex:'0',role:'button','aria-label':(p.n==='★'?'After the plan: ':'Phase '+p.n+': ')+p.t},svg);
+    el('rect',{x:cx-W/2,y:cy-H/2,width:W,height:H,rx:11},g);
+    el('circle',{cx:cx-W/2+23,cy:cy,r:12,class:'num'},g);
+    el('text',{x:cx-W/2+23,y:cy+4.2,'text-anchor':'middle',class:'numt'},g,p.n);
+    el('text',{x:cx-W/2+43,y:cy-3,class:'t'},g,p.t);
+    el('text',{x:cx-W/2+43,y:cy+13,class:'s'},g,p.time);
+    const pick=()=>{playing=false;sync();seg=i;mode='dwell';place(stops[i]);setActive(i)};
+    g.addEventListener('click',pick);
+    g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();pick()}});
+    nodes.push(g);
+  });
+  const track=el('path',{d:d,fill:'none',stroke:'none'},svg);
+  function place(len){const pt=track.getPointAtLength(len);[halo,tok].forEach(c=>{c.setAttribute('cx',pt.x);c.setAttribute('cy',pt.y)})}
+  let active=-1;
+  function setActive(i){
+    if(i===active) return;
+    active=i;
+    nodes.forEach((n,k)=>n.classList.toggle('active',k===i));
+    const p=PH[i];
+    $('#fc-k').textContent=(p.n==='★'?'After':'Phase '+p.n)+' · '+p.time;
+    $('#fc-t').textContent=p.t;
+    $('#fc-d').textContent=p.d;
+    $('#fc-g').textContent=p.g;
+    const a=$('#fc-a');a.setAttribute('href','#'+p.id);a.textContent=p.n==='★'?'Open upkeep →':'Open phase '+p.n+' →';
+  }
+  let playing=true,visible=false,seg=0,mode='dwell',t0=0,raf=0;
+  const DWELL=2400,MOVE=750,btn=$('#flow-play');
+  function sync(){btn.textContent=playing?'Pause':'Play'}
+  function frame(now){
+    raf=0;
+    if(!(playing&&visible&&motion)) return;
+    if(!t0) t0=now;
+    const dt=now-t0;
+    if(mode==='dwell'){
+      if(dt>DWELL){
+        if(seg>=stops.length-1){seg=0;place(0);setActive(0);t0=now}
+        else{mode='move';t0=now}
+      }
+    }else{
+      const k=Math.min(1,dt/MOVE), e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;
+      place(stops[seg]+(stops[seg+1]-stops[seg])*e);
+      if(k>=1){seg++;setActive(seg);mode='dwell';t0=now}
+    }
+    raf=requestAnimationFrame(frame);
+  }
+  function kick(){if(!raf&&playing&&visible&&motion){t0=0;raf=requestAnimationFrame(frame)}}
+  btn.addEventListener('click',()=>{playing=!playing;sync();kick()});
+  onMotion.push(()=>kick());
+  if('IntersectionObserver' in window){
+    new IntersectionObserver(es=>{visible=es[0].isIntersecting;kick()},{threshold:.25}).observe(svg);
+  }else visible=true;
+  place(0);setActive(0);sync();
+  return {
+    update(stats){
+      let lead=0;
+      PH.forEach((p,i)=>{
+        const s=stats[p.id], ok=!!s&&s.d===s.n;
+        nodes[i].classList.toggle('done',ok);
+      });
+      for(let i=0;i<9;i++){const s=stats[PH[i].id];if(s&&s.d===s.n)lead++;else break}
+      nodes[9].classList.toggle('done',lead===9);
+      done.setAttribute('stroke-dasharray',stops[lead]+' '+TOTAL);
+    }
+  };
+})();
+
+/* ── progress ──────────────────────────── */
+const boxes=$$('input[data-step]');
+const navLinks=new Map($$('.left a[href^="#"]').map(a=>[a.getAttribute('href').slice(1),a]));
+// Steps already carried out on this machine on 20 Nov 2026. Used until you tick or untick something yourself.
+const EXECUTED=['p0.1','p0.2','p1.1','p1.2','p1.3','p1.4','p1.5','p2.1','p2.2','p2.3','p3.1','p3.2','p4.1','p4.2','p4.4','p5.1','p6.1','p6.2','p6.3','p7.1','p7.2','p7.3','p8.2'];
+const STEPS_KEY='nvplan.steps.v2';
+const doneSet=new Set(store.get(STEPS_KEY,EXECUTED));
+function stats(){
+  const m={};
+  boxes.forEach(b=>{const p=b.dataset.step.split('.')[0];(m[p]=m[p]||{n:0,d:0}).n++;if(b.checked)m[p].d++});
+  return m;
+}
+function updateProgress(){
+  const st=stats();let n=0,d=0;
+  for(const p in st){
+    n+=st[p].n;d+=st[p].d;
+    const a=navLinks.get(p);
+    if(a){a.classList.toggle('done',st[p].d===st[p].n);const c=$('.count',a);if(c)c.textContent=st[p].d+'/'+st[p].n}
+  }
+  $('#top-fill').style.width=(n?d/n*100:0)+'%';
+  $('#top-count').textContent=d+' / '+n;
+  $('#ring-n').textContent=d+' / '+n;
+  $('#ring-fg').setAttribute('stroke-dashoffset',String(163.4*(1-(n?d/n:0))));
+  const next=boxes.find(b=>!b.checked), nu=$('#nextup');
+  if(next){
+    const step=next.closest('.step'), tc=$('.step-t',step).cloneNode(true);
+    const sm=$('small',tc);if(sm)tc.removeChild(sm);
+    const t=tc.textContent.trim();
+    const sec=next.closest('section');
+    nu.setAttribute('href','#'+step.id);
+    $('small',nu).textContent='Next up · phase '+sec.id.slice(1);
+    $('#nextup-t').textContent=t;
+    $('#ring-s').textContent='steps done';
+  }else{
+    nu.setAttribute('href','#upkeep');
+    $('small',nu).textContent='All done';
+    $('#nextup-t').textContent='Rollback & upkeep';
+    $('#ring-s').textContent='plan complete';
+  }
+  flow.update(st);
+}
+boxes.forEach(b=>{
+  b.checked=doneSet.has(b.dataset.step);
+  b.addEventListener('change',()=>{
+    b.checked?doneSet.add(b.dataset.step):doneSet.delete(b.dataset.step);
+    store.set(STEPS_KEY,Array.from(doneSet));
+    updateProgress();
+  });
+});
+$('#reset').addEventListener('click',()=>{
+  if(!doneSet.size||!confirm('Clear all ticked steps?')) return;
+  doneSet.clear();boxes.forEach(b=>{b.checked=false});
+  store.set(STEPS_KEY,[]);updateProgress();
+});
+updateProgress();
+
+/* ── scroll spy + on-this-page ─────────── */
+const secs=$$('main section[id]');
+let activeSec=null,tocLinks=[];
+function buildToc(sec){
+  const ul=$('#toc');ul.textContent='';tocLinks=[];
+  $('#toc-title').textContent=$('h2',sec).textContent;
+  const hs=$$('h3[id]',sec);
+  if(!hs.length){const li=document.createElement('li');li.className='none';li.textContent='No subsections';ul.appendChild(li);return}
+  hs.forEach(h=>{
+    const li=document.createElement('li'),a=document.createElement('a');
+    a.href='#'+h.id;a.textContent=h.textContent;li.appendChild(a);ul.appendChild(li);
+    tocLinks.push([h,a]);
+  });
+}
+function spy(){
+  const line=parseFloat(getComputedStyle(root).getPropertyValue('--topbar-h'))+60;
+  let cur=secs[0];
+  for(const s of secs){if(s.getBoundingClientRect().top<=line)cur=s;else break}
+  if(innerHeight+scrollY>=document.documentElement.scrollHeight-4) cur=secs[secs.length-1];
+  if(cur!==activeSec){
+    activeSec=cur;
+    navLinks.forEach((a,id)=>a.classList.toggle('active',id===cur.id));
+    buildToc(cur);
+  }
+  let on=null;
+  tocLinks.forEach(([h,a])=>{if(h.getBoundingClientRect().top<=line+30)on=a});
+  tocLinks.forEach(([h,a])=>a.classList.toggle('active',a===on));
+}
+let spyRaf=0;
+addEventListener('scroll',()=>{if(!spyRaf)spyRaf=requestAnimationFrame(()=>{spyRaf=0;spy()})},{passive:true});
+addEventListener('resize',spy);
+spy();
+
+/* ── editor mock ───────────────────────── */
+(function(){
+  const nv=$('#nv'), cap=$('#nv-cap'), termEl=$('#nv-term');
+  const S={files:false,buffers:false,git:false,outline:false,term:false,trouble:false};
+  const LEFT=['files','buffers','git'], ALL=Object.keys(S);
+  const CAP={
+    files:['<leader>e','The file tree docks on the left, rooted at the project. l and h expand and collapse; a, d and r add, delete and rename.'],
+    buffers:['<leader>be','Open buffers, as a second section of the same sidebar.'],
+    git:['<leader>ge','Changed, staged and untracked files. Enter opens one; its hunks are marked in the sign column.'],
+    outline:['<leader>cs','Symbols of the current file, from the language server, docked right. Enter jumps to one.'],
+    term:['<C-/>','A real shell in a bottom split. The same key hides it again and the process keeps running.'],
+    trouble:['<leader>xx','Every diagnostic in the project, listed beside the terminal.'],
+    hide:['<leader>ue','edgy closes every panel at once, leaving just the editor.'],
+    show:['<leader>ue','…and the same key reopens the pinned panels: the three tree sections and the outline.']
+  };
+  let gen=0, timers=[];
+  const narrow=()=>nv.clientWidth<520;
+  function say(k){
+    const c=CAP[k];if(!c) return;
+    cap.textContent='';
+    const kb=document.createElement('kbd');kb.textContent=c[0];
+    cap.appendChild(kb);cap.appendChild(document.createTextNode(c[1]));
+  }
+  function clearTimers(){timers.forEach(clearTimeout);timers=[]}
+  function termFinal(typed,lines,prompt2){
+    termEl.textContent='';
+    const add=(cls,txt)=>{const s=document.createElement('span');if(cls)s.className=cls;s.textContent=txt;termEl.appendChild(s);return s};
+    add('dim','~/dev/app  main ✗\n');add('p','❯ ');
+    const t=add('',typed);
+    const cur=add('cursor','▌');
+    return {t:t,cur:cur,add:add};
+  }
+  const CMD='go test ./...', OUT=['\nok   app/internal/server  0.412s','\nok   app/cmd/api          0.208s'];
+  function runTerm(){
+    clearTimers();
+    if(!motion){
+      const r=termFinal(CMD);r.cur.remove();
+      OUT.forEach(l=>r.add('',l));r.add('p','\n❯ ');r.add('cursor','▌');return;
+    }
+    const r=termFinal('');
+    let at=500;
+    for(let i=1;i<=CMD.length;i++){timers.push(setTimeout(()=>{r.t.textContent=CMD.slice(0,i)},at));at+=55}
+    at+=350;
+    timers.push(setTimeout(()=>{r.cur.remove()},at));
+    OUT.forEach(l=>{at+=320;timers.push(setTimeout(()=>{r.add('',l)},at))});
+    at+=250;
+    timers.push(setTimeout(()=>{r.add('p','\n❯ ');r.add('cursor','▌')},at));
+  }
+  function render(){
+    const left=LEFT.some(k=>S[k]);
+    $('.nv-left',nv).classList.toggle('open',left);
+    LEFT.forEach(k=>$('.nv-sec[data-p="'+k+'"]',nv).classList.toggle('open',S[k]));
+    $('.nv-right',nv).classList.toggle('open',S.outline);
+    $('.nv-bottom',nv).classList.toggle('open',S.term||S.trouble);
+    ['term','trouble'].forEach(k=>$('.nv-pane[data-p="'+k+'"]',nv).classList.toggle('open',S[k]));
+    const any=ALL.some(k=>S[k]);
+    $$('.keybtn[data-toggle]').forEach(b=>{
+      const k=b.dataset.toggle;
+      b.setAttribute('aria-pressed',String(k==='all'?any:S[k]));
+    });
+  }
+  function set(k,on){
+    if(S[k]===on) return;
+    S[k]=on;
+    if(on&&narrow()){
+      if(k==='outline') LEFT.forEach(x=>{S[x]=false});
+      if(LEFT.indexOf(k)>=0) S.outline=false;
+    }
+    if(k==='term'){on?runTerm():clearTimers()}
+  }
+  function toggle(k){
+    if(k==='all'){
+      const any=ALL.some(x=>S[x]);
+      if(any){ALL.forEach(x=>set(x,false));say('hide')}
+      else{
+        // like edgy: reopening brings back the pinned views, not whatever was open before
+        const s=narrow()?{files:true,buffers:true,git:true}:{files:true,buffers:true,git:true,outline:true};
+        ALL.forEach(x=>set(x,!!s[x]));say('show');
+      }
+    }else{
+      set(k,!S[k]);
+      if(S[k]) say(k);
+    }
+    render();
+  }
+  nv.addEventListener('click',e=>{const h=e.target.closest('[data-toggle]');if(h){gen++;toggle(h.dataset.toggle)}});
+  $$('.keybtn[data-toggle]').forEach(b=>b.addEventListener('click',()=>{gen++;toggle(b.dataset.toggle)}));
+
+  async function tour(){
+    const my=++gen;
+    ALL.forEach(x=>set(x,false));render();
+    await wait(600);
+    const seq=narrow()?['files','git','term','trouble']:['files','git','outline','term','trouble'];
+    for(const k of seq){
+      if(gen!==my) return;
+      set(k,true);say(k);render();
+      await wait(k==='term'?2900:1500);
+    }
+    if(gen!==my) return;
+    toggle('all');await wait(1500);
+    if(gen!==my) return;
+    toggle('all');
+  }
+  $('#nv-tour').addEventListener('click',tour);
+
+  function staticState(){ALL.forEach(x=>set(x,false));set('files',true);if(!narrow())set('outline',true);set('term',true);render()}
+  let started=false;
+  if(motion&&'IntersectionObserver' in window){
+    const io=new IntersectionObserver(es=>{
+      if(es[0].isIntersecting&&!started){started=true;io.disconnect();tour()}
+    },{threshold:.55});
+    io.observe(nv);
+  }else{started=true;staticState()}
+  render();
+})();
+
+applyMotion();
+})();
+</script>
+<noscript><p style="padding:16px;max-width:840px;margin:0 auto">The diagrams, the layout mock and progress tracking need JavaScript. The plan text and commands above work without it.</p></noscript>
+</body>
+</html>
