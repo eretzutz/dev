@@ -1,0 +1,70 @@
+# Host the local oMLX server on the tailnet with Tailscale Serve.
+# Why this and not a public hostname: cf-tunnel.html, in this folder.
+#
+#   just          list recipes
+#   just up       forward tailnet port 8000 on this Mac to oMLX (idempotent)
+#   just down     stop forwarding; oMLX itself keeps running on loopback
+#   just status   serve config and the origin listener
+#   just check    prove the posture: origin demands a key, URLs answer, nothing is public
+#   just url      print the base URLs to give a client (by name, and by tailnet IP)
+#
+# Nothing here changes oMLX: same bind (127.0.0.1), same port, same launchd job.
+# deps: just, tailscale, python3 (the system 3.9 is enough)
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+dir := justfile_directory()
+
+# oMLX as it runs today, under the launchd agent sh.brew.omlx.
+ORIGIN_ADDR := "127.0.0.1:8000"
+ORIGIN := "http://" + ORIGIN_ADDR
+# Tailnet-side port. The same number as the origin on purpose: a client's base
+# URL then differs from the local one only in the host.
+PORT := "8000"
+
+# Show available recipes
+default:
+    @just --list --unsorted
+
+# A plain TCP forward, not `--http`: in HTTP mode tailscaled answers only for
+# this Mac's tailnet name and returns 404 to a request addressed to its tailnet
+# IP, and the IP is the fallback for a device whose MagicDNS is not working.
+#
+# Forward tailnet port 8000 to oMLX. Refuses while oMLX would answer a request with no key.
+up: _origin-guard
+    tailscale serve --bg --tcp={{PORT}} tcp://{{ORIGIN_ADDR}}
+
+# Stop forwarding on the tailnet (oMLX keeps running locally)
+down:
+    tailscale serve --tcp={{PORT}} off
+
+# Serve config, and what is listening on the origin port
+status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    tailscale serve status
+    echo
+    echo "origin listener:"
+    lsof -nP -iTCP:{{PORT}} -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print "  " $1, $9}'
+
+# Every check: origin posture, serve config, Funnel off, the tailnet URLs (set OMLX_CHECK_KEY to test with a key)
+check:
+    python3 {{dir}}/scripts/check.py --origin {{ORIGIN}} --port {{PORT}}
+
+# The base URLs an OpenAI-compatible client on another tailnet device can use
+url:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tailscale status --json | python3 -c '
+    import json, sys
+    me = json.load(sys.stdin)["Self"]
+    name = me["DNSName"].rstrip(".")
+    print("by name   http://%s:{{PORT}}/v1" % name)
+    print("short     http://%s:{{PORT}}/v1" % name.split(".")[0])
+    print("by IP     http://%s:{{PORT}}/v1   (works without MagicDNS)" % me["TailscaleIPs"][0])
+    '
+
+# A leading underscore keeps a recipe out of `just --list`. This is the gate on
+# `up`: oMLX trusts loopback peers, and serve makes every tailnet device one.
+_origin-guard:
+    python3 {{dir}}/scripts/check.py --origin {{ORIGIN}} --port {{PORT}} --origin-only

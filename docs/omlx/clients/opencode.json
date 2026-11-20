@@ -1,0 +1,34 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "omlx": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "oMLX",
+      "options": {
+        "baseURL": "http://100.72.79.31:8000/v1",
+        "apiKey": "{env:OMLX_KEY}"
+      },
+      "models": {
+        "Qwen3.8-27B-oQ4e-mtp": {
+          "name": "Qwen3.8-27B-oQ4e-mtp",
+          "attachment": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "limit": { "context": 262144, "output": 32768 }
+        },
+        "Qwen3.8-Flash-Next-oQ3.5e-mtp": {
+          "name": "Qwen3.8-Flash-Next-oQ3.5e-mtp",
+          "attachment": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "limit": { "context": 262144, "output": 32768 }
+        },
+        "gemma-4-31B-it-oQ4e-mtp": {
+          "name": "gemma-4-31B-it-oQ4e-mtp",
+          "attachment": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "limit": { "context": 262144, "output": 32768 }
+        }
+      }
+    }
+  },
+  "model": "omlx/Qwen3.8-27B-oQ4e-mtp"
+}

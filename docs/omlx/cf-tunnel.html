@@ -1,0 +1,1555 @@
+<!--
+- document here in html, with left/right nav panels, dataflow/process diagram motion/animation, the plan to implement cloudflare tunnel for hosting local omlx server via cf subdomain omlx.xilia.net
+- use rust/python/justfile tooling as usual
+- consider other alternative from GCP/etc
+- design: named, locally-managed tunnel "omlx" -> proxied CNAME omlx.xilia.net;
+  cloudflared -> omlx-gate (Rust, 127.0.0.1:8100) -> oMLX (127.0.0.1:8000, untouched);
+  the gate exists because oMLX trusts loopback peers and a tunnel turns every
+  internet client into one; Python (stdlib) for preflight / render / smoke / edge
+  rules; justfile front-end laid out like ../../../atuin-host
+- measured read-only on the Mac Studio, 20 Nov 2026: oMLX 0.8.0 on 127.0.0.1:8000,
+  cloudflared not installed, omlx.xilia.net has no DNS record yet
+- DECIDED 20 Nov 2026 ("if tailscale can host the local omlx server let's go with that"):
+  Tailscale Serve, tailnet only, is the route and is live: a TCP forward of tailnet port 8000,
+  http://steves-mac-studio.tail059551.ts.net:8000 or http://100.72.79.31:8000 -> 127.0.0.1:8000
+  (justfile + scripts/check.py in this folder). TCP rather than --http because the HTTP proxy
+  answers 404 to a request addressed to the tailnet IP.
+- agents: clients/claude-omlx.sh (Claude Code) and clients/opencode.json (opencode) point at
+  that URL with a key from $OMLX_KEY; both answered a test prompt through the tailnet IP. The Cloudflare tunnel plan is kept below, deferred until a caller outside
+  the tailnet exists.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hosting oMLX beyond the Mac: Tailscale Serve now, Cloudflare Tunnel deferred &middot; Implementation plan</title>
+<meta name="description" content="The local oMLX inference server is served to the tailnet with Tailscale Serve (decided and live, 20 Nov 2026). The full plan for a public omlx.xilia.net through a Cloudflare Tunnel, with a small Rust gate, Python checks and a justfile front-end, is kept here as deferred, with a comparison against GCP and other alternatives." />
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #57606a;
+    --accent: #2563eb;
+    --border: #d8dee4;
+    --code-bg: #f5f7fa;
+    --head-bg: #f0f3f6;
+    --panel: #ffffff;
+    --warn: #9a3412;
+    --warn-bg: #fff7ed;
+    --ok: #15803d;
+    --ok-bg: #f0fdf4;
+    --bad: #b91c1c;
+    --bad-bg: #fef2f2;
+    --unk: #a16207;
+    --unk-bg: #fefce8;
+    --req: #2563eb;
+    --res: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --accent: #6ea8fe;
+      --border: #30363d;
+      --code-bg: #161b22;
+      --head-bg: #161b22;
+      --panel: #11161d;
+      --warn: #fdba74;
+      --warn-bg: #2a1c0f;
+      --ok: #86efac;
+      --ok-bg: #10231a;
+      --bad: #fca5a5;
+      --bad-bg: #2a1215;
+      --unk: #fde68a;
+      --unk-bg: #2a2410;
+      --req: #6ea8fe;
+      --res: #86efac;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .progress {
+    position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 10;
+    background: var(--accent); transform-origin: 0 50%; transform: scaleX(0);
+  }
+  .shell {
+    display: grid;
+    grid-template-columns: 15rem minmax(0, 1fr) 17.5rem;
+    gap: 2.75rem;
+    max-width: 94rem;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 6rem;
+  }
+  .rail { position: sticky; top: 1.5rem; align-self: start; max-height: calc(100vh - 3rem); overflow-y: auto; font-size: .88em; }
+  .rail h2 { font-size: .74em; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); border: 0; margin: 0 0 .7em; padding: 0; }
+  .left nav ol { list-style: none; margin: 0; padding: 0; counter-reset: sec; }
+  .left nav > ol > li { counter-increment: sec; }
+  .left nav a {
+    display: block; padding: .28em .7em; margin: 1px 0;
+    color: var(--muted); text-decoration: none;
+    border-left: 2px solid var(--border); line-height: 1.4;
+    transition: color .2s ease, border-color .2s ease, background .2s ease;
+  }
+  .left nav > ol > li > a::before { content: counter(sec) ". "; font-variant-numeric: tabular-nums; }
+  .left nav ol ol a { padding-left: 1.6em; font-size: .94em; }
+  .left nav a:hover { color: var(--fg); }
+  .left nav a[aria-current="true"] { color: var(--accent); border-left-color: var(--accent); background: var(--code-bg); font-weight: 600; }
+  .rail-tools { margin-top: 1.4em; padding-top: 1em; border-top: 1px solid var(--border); }
+  .rail-tools button {
+    font: inherit; font-size: .95em; cursor: pointer; width: 100%;
+    color: var(--fg); background: var(--code-bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: .45em .7em;
+  }
+  .rail-tools button:hover { border-color: var(--accent); }
+  .rail-tools p { margin: .5em 0 0; color: var(--muted); font-size: .9em; line-height: 1.45; }
+  .right .card { border: 1px solid var(--border); border-radius: 8px; padding: .8em .95em; margin: 0 0 1em; background: var(--panel); }
+  .right .card h3 { font-size: .98em; margin: 0 0 .35em; }
+  .right dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .2em .7em; line-height: 1.45; }
+  .right dt { color: var(--muted); }
+  .right dd { margin: 0; overflow-wrap: anywhere; }
+  .right ul { margin: .2em 0; padding-left: 1.1em; line-height: 1.45; }
+  .right li { margin: .25em 0; overflow-wrap: anywhere; }
+  .right code { font-size: .86em; }
+  .legend { display: grid; gap: .35em; }
+  .legend span { display: inline-flex; align-items: center; gap: .5em; }
+  .swatch { width: 1.6em; height: .7em; border-radius: 3px; display: inline-block; flex: none; }
+  main { min-width: 0; }
+  h1, h2, h3, h4 { line-height: 1.25; font-weight: 650; }
+  h1 { font-size: 2.05em; margin: 0 0 .3em; }
+  main h2 { font-size: 1.42em; margin: 2.6em 0 .6em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+  main h3 { font-size: 1.12em; margin: 1.9em 0 .5em; }
+  h4 { font-size: .98em; margin: 1.4em 0 .4em; color: var(--muted); }
+  p, li { margin: .5em 0; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .12em .38em; border-radius: 4px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1em 1.2em; overflow-x: auto; font-size: .84em; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  pre .add { color: var(--ok); }
+  pre .del { color: var(--bad); }
+  pre .cm { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .9em; }
+  th, td { border: 1px solid var(--border); padding: .45em .7em; text-align: left; vertical-align: top; }
+  th { background: var(--head-bg); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  .lede { color: var(--muted); font-size: 1.06em; margin-bottom: 1.4em; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4em; margin: 0 0 2em; }
+  .note, .warn, .decision {
+    border-left: 3px solid var(--accent); background: var(--code-bg);
+    padding: .8em 1em; margin: 1.2em 0; border-radius: 0 6px 6px 0;
+  }
+  .warn { border-left-color: var(--warn); background: var(--warn-bg); }
+  .decision { border-left-color: var(--ok); background: var(--ok-bg); }
+  .small { font-size: .88em; color: var(--muted); }
+  .phase { border: 1px solid var(--border); border-radius: 8px; padding: .9em 1.2em; margin: 1.2em 0; }
+  .phase h3, .phase h4 { margin-top: 0; }
+  .phase .done-when { margin: .7em 0 0; padding: .6em .9em; border-radius: 6px; background: var(--code-bg); }
+  .phase .status { margin: 0 0 .7em; padding: .6em .9em; border-radius: 6px; background: var(--ok-bg); color: var(--ok); }
+  .tag {
+    display: inline-block; font-size: .72em; font-weight: 650; letter-spacing: .03em;
+    text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: .08em .65em; vertical-align: middle;
+  }
+  .tag.ok { color: var(--ok); border-color: currentColor; background: var(--ok-bg); }
+  .tag.bad { color: var(--bad); border-color: currentColor; background: var(--bad-bg); }
+  .tag.unk { color: var(--unk); border-color: currentColor; background: var(--unk-bg); }
+  .tag.acc { color: var(--accent); border-color: currentColor; }
+  td .tag { white-space: nowrap; }
+  figure.diagram { margin: 1.6em 0; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 1em 1em .6em; }
+  figure.diagram svg { display: block; width: 100%; height: auto; overflow: visible; }
+  @media (max-width: 720px) {
+    figure.diagram { overflow-x: auto; }
+    figure.diagram svg { min-width: 680px; }
+  }
+  figure.diagram figcaption { color: var(--muted); font-size: .86em; margin-top: .6em; line-height: 1.5; }
+  svg text { fill: var(--fg); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  svg text.sub { fill: var(--muted); font-size: 11.5px; }
+  svg text.lane { fill: var(--muted); font-size: 11px; letter-spacing: .14em; font-weight: 650; }
+  svg text.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  svg text.lbl { fill: var(--muted); font-size: 11px; }
+  svg .node rect { fill: var(--code-bg); stroke: var(--border); stroke-width: 1.5; }
+  svg .node.ok rect { stroke: var(--ok); }
+  svg .node.bad rect { stroke: var(--bad); fill: var(--bad-bg); }
+  svg .node.unk rect { stroke: var(--unk); fill: var(--unk-bg); }
+  svg .node.acc rect { stroke: var(--accent); }
+  svg .group { fill: none; stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 4 5; }
+  svg .wire { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+  svg .axis { stroke: var(--border); stroke-width: 2; }
+  svg .flow { fill: none; stroke-width: 2; stroke-dasharray: 6 6; animation: march 1s linear infinite; }
+  svg .flow.req { stroke: var(--req); }
+  svg .flow.res { stroke: var(--res); }
+  svg .flow.bad { stroke: var(--bad); animation-duration: 2.4s; }
+  svg .flow.par { stroke: var(--muted); }
+  svg .arrowhead { fill: var(--muted); }
+  svg .packet.req { fill: var(--req); }
+  svg .packet.res { fill: var(--res); }
+  svg .packet.bad { fill: var(--bad); }
+  svg .packet.tok2 { fill: var(--unk); }
+  svg .cross { fill: var(--bad); font-weight: 700; }
+  svg .dot-ka { fill: var(--unk); }
+  svg .dot-tok { fill: var(--res); }
+  svg .pulse { animation: pulse 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes march { to { stroke-dashoffset: -12; } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  .paused svg .flow, .paused svg .pulse { animation-play-state: paused; }
+  @media (prefers-reduced-motion: reduce) {
+    svg .flow, svg .pulse { animation: none; }
+    svg .packet { display: none; }
+  }
+  @media (max-width: 1240px) {
+    .shell { grid-template-columns: 14rem minmax(0, 1fr); }
+    .right { grid-column: 2; position: static; max-height: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0 1em; }
+    .right > h2 { grid-column: 1 / -1; }
+  }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: minmax(0, 1fr); padding: 1.5rem 1.1rem 4rem; gap: 1.5rem; }
+    .left { position: static; max-height: none; border: 1px solid var(--border); border-radius: 8px; padding: .8em 1em; }
+    .left nav a { border-left: 0; padding: .18em 0; }
+    .left nav ol ol a { padding-left: 1.2em; }
+    .right { grid-column: 1; }
+  }
+  @media print {
+    :root {
+      --bg: #fff; --fg: #000; --muted: #444; --accent: #000; --border: #999; --code-bg: #fff; --head-bg: #eee;
+      --panel: #fff; --warn: #000; --warn-bg: #fff; --ok: #000; --ok-bg: #fff; --bad: #000; --bad-bg: #fff; --unk: #000; --unk-bg: #fff;
+    }
+    .progress, .left, .rail-tools { display: none; }
+    .shell { display: block; padding: 0; max-width: none; }
+    .right { position: static; max-height: none; display: block; }
+    body { font-size: 10.5pt; line-height: 1.5; }
+    svg .packet { display: none; }
+    h2, h3, h4 { break-after: avoid; }
+    table, pre, .phase, .note, .warn, .decision, figure { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="progress" aria-hidden="true"></div>
+
+<div class="shell">
+
+<!-- ================= LEFT: contents ================= -->
+<aside class="rail left" aria-label="Contents">
+  <h2>Contents</h2>
+  <nav>
+    <ol>
+      <li><a href="#summary">Summary</a></li>
+      <li><a href="#tailscale">The route taken: Tailscale Serve</a></li>
+      <li><a href="#agents">Connecting an agent</a></li>
+      <li><a href="#where">Where it is</a></li>
+      <li><a href="#findings">What forwarding changes</a></li>
+      <li><a href="#deferred">Deferred: the public hostname</a>
+        <ol>
+          <li><a href="#decisions">Decisions</a></li>
+          <li><a href="#flow">Data flow</a></li>
+          <li><a href="#process">Process</a></li>
+          <li><a href="#tooling">Tooling: Rust, Python, just</a></li>
+          <li><a href="#phases">Phases</a></li>
+          <li><a href="#order">Order of work</a></li>
+          <li><a href="#testing">Testing</a></li>
+          <li><a href="#files">Files</a></li>
+        </ol>
+      </li>
+      <li><a href="#alternatives">Alternatives</a></li>
+      <li><a href="#risks">Risks</a></li>
+      <li><a href="#open">Open questions</a></li>
+    </ol>
+  </nav>
+  <div class="rail-tools">
+    <button type="button" id="anim-toggle" aria-pressed="false">Pause diagrams</button>
+    <p>Diagrams start paused when your system asks for reduced motion.</p>
+  </div>
+</aside>
+
+<!-- ================= CENTER: document ================= -->
+<main>
+
+<h1>Hosting oMLX beyond the Mac</h1>
+<p class="lede">
+  oMLX on the Mac Studio answers only on <code>127.0.0.1:8000</code>. It is now served
+  to your own devices over the tailnet with Tailscale Serve: no public surface, no
+  change to how oMLX runs. The original ask &mdash; a public
+  <code>https://omlx.xilia.net</code> through a Cloudflare Tunnel, with a small Rust
+  gate in front of oMLX &mdash; is planned in full below and deferred until something
+  outside the tailnet needs the API.
+</p>
+<div class="meta">
+  <span class="tag">Plan</span>
+  <span class="tag">Planned 20 Nov 2026</span>
+  <span class="tag">from the stub in this file</span>
+  <span class="tag ok">decided 20 Nov 2026 &middot; Tailscale Serve &middot; live</span>
+  <span class="tag unk">Cloudflare tunnel &middot; deferred, nothing installed</span>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="summary">Summary</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Today</th><th>What we found</th><th>Plan</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Reach</strong><br /><span class="tag bad">gap</span></td>
+      <td>oMLX 0.8.0 listens on <code>127.0.0.1:8000</code>. Nothing outside the Mac can call it.</td>
+      <td><code>xilia.net</code> is already on Cloudflare; <code>omlx.xilia.net</code> has no record and the zone has no wildcard, so the name is free. <code>cloudflared</code> is not installed.</td>
+      <td><strong>Now:</strong> Tailscale Serve on tailnet port 8000, live. <strong>Deferred:</strong> a named tunnel <code>omlx</code> and a proxied CNAME for a public hostname.</td>
+    </tr>
+    <tr>
+      <td><strong>Trust</strong><br /><span class="tag bad">risk</span></td>
+      <td>A key is required for inference. The admin dashboard, Swagger UI and route list answer without one, which is fine on loopback.</td>
+      <td>Three of oMLX&rsquo;s protections key off &ldquo;the peer is this machine&rdquo;. Behind a tunnel every request is from this machine (<a href="#findings">details</a>).</td>
+      <td><strong>Now:</strong> the audience is your five devices, and <code>just check</code> proves the origin still refuses a keyless request; <code>just up</code> will not serve otherwise. <strong>Deferred:</strong> <code>omlx-gate</code>, a small Rust proxy with a default-deny route allowlist, the lockout restored per client address, and a canary that fails closed.</td>
+    </tr>
+    <tr>
+      <td><strong>Staying up</strong><br /><span class="tag unk">check</span></td>
+      <td>oMLX is a launchd agent with <code>KeepAlive</code>; it starts at login.</td>
+      <td>System sleep is set to 1 minute and is only being held off by <code>caffeinate</code> assertions; <code>autorestart</code> is off.</td>
+      <td><strong>Now:</strong> <code>tailscaled</code> is a boot-time daemon and keeps the serve config; oMLX appears at login. The power-settings decision is still yours (<a href="#open">open questions</a>). <strong>Deferred:</strong> two more launchd agents (gate, tunnel).</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="decision">
+  <strong>Decided 20 Nov 2026: Tailscale Serve, not the tunnel.</strong>
+  Every caller today is one of your own devices, and all five are already on the
+  tailnet. Serving oMLX there needs nothing new installed, publishes nothing, and puts
+  no third party in a position to read prompts. It does not give the name
+  <code>omlx.xilia.net</code>; the URL is the Mac&rsquo;s tailnet name. The tunnel
+  becomes worth building the day a caller that cannot join the tailnet shows up
+  &mdash; a hosted service, a teammate, CI &mdash; and the plan for it stays here,
+  including the rule that still applies then: gate first, tunnel second.
+</div>
+
+<!-- ======================================================= -->
+<h2 id="tailscale">The route taken: Tailscale Serve</h2>
+<p>
+  Live since 20 Nov 2026. One command turned it on, one turns it off, and oMLX was not
+  touched.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Thing</th><th>As it is now</th></tr></thead>
+  <tbody>
+    <tr><td>Base URL for clients</td><td><code>http://steves-mac-studio.tail059551.ts.net:8000/v1</code>, the short form <code>http://steves-mac-studio:8000/v1</code>, or by tailnet address <code>http://100.72.79.31:8000/v1</code>, which needs no name resolution. Same port as on the Mac itself; only the host differs.</td></tr>
+    <tr><td>Who can reach it</td><td>Devices on your tailnet: one user, five machines. Funnel is off, there is no DNS record and no open port, so nothing on the public internet can.</td></tr>
+    <tr><td>Forwarding</td><td><code>tailscaled</code> (Homebrew 1.104.7, a boot-time daemon) forwards tailnet TCP port 8000 to <code>127.0.0.1:8000</code>. A plain TCP forward, not Serve&rsquo;s HTTP proxy: the proxy answers only for the Mac&rsquo;s tailnet name and returned 404 to a request addressed to the tailnet IP. The config is stored by <code>tailscaled</code> and survives restarts.</td></tr>
+    <tr><td>Encryption</td><td>WireGuard, device to device. The URL is <code>http</code> because the tailnet does not have HTTPS certificates enabled; the traffic between devices is encrypted either way (<a href="#open">open question</a> on switching to <code>https</code>).</td></tr>
+    <tr><td>oMLX</td><td>Unchanged: still bound to <code>127.0.0.1:8000</code>, still the launchd agent <code>sh.brew.omlx</code>, still requires a key. The dashboard is at <code>/admin</code> on the same URL.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 250" role="img" aria-labelledby="dT-t dT-d">
+  <title id="dT-t">How a request reaches oMLX over the tailnet</title>
+  <desc id="dT-d">Left: another device on the tailnet, with a key. Middle: a WireGuard connection, encrypted device to device, to http://steves-mac-studio:8000. Right, on the Mac Studio: tailscaled accepts tailnet port 8000, with Funnel off, and proxies to oMLX on 127.0.0.1:8000, which verifies the key. The streamed response returns the same way. Below: the public internet has no route in, because there is no DNS record, no open port, and Funnel is off.</desc>
+  <defs>
+    <marker id="dT-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+
+  <text class="lane" x="10" y="20">YOUR OTHER DEVICES</text>
+  <text class="lane" x="232" y="20">TAILNET</text>
+  <text class="lane" x="560" y="20">MAC STUDIO &mdash; OMLX STAYS ON 127.0.0.1</text>
+  <rect class="group" x="548" y="38" width="369" height="140" rx="10" />
+  <rect class="group" x="215" y="58" width="318" height="100" rx="50" />
+
+  <path class="flow req" d="M200,73 H558" marker-end="url(#dT-arrow)" />
+  <path class="flow req" d="M720,73 H768" marker-end="url(#dT-arrow)" />
+  <path class="flow res" d="M770,143 H722" marker-end="url(#dT-arrow)" />
+  <path class="flow res" d="M560,143 H202" marker-end="url(#dT-arrow)" />
+  <text x="374" y="104" text-anchor="middle">WireGuard, device to device</text>
+  <text class="sub mono" x="374" y="122" text-anchor="middle">http://steves-mac-studio:8000</text>
+
+  <g class="node"><rect x="10" y="60" width="190" height="96" rx="8" /><text x="105" y="98" text-anchor="middle">another tailnet device</text><text class="sub" x="105" y="115" text-anchor="middle">MacBook, mini, M4 Pro, Linux</text><text class="sub mono" x="105" y="131" text-anchor="middle">Bearer &lt;key&gt;</text></g>
+  <g class="node acc"><rect x="560" y="60" width="160" height="96" rx="8" /><text x="640" y="98" text-anchor="middle">tailscaled</text><text class="sub" x="640" y="115" text-anchor="middle">serve: tailnet port 8000</text><text class="sub" x="640" y="131" text-anchor="middle">Funnel off</text></g>
+  <g class="node unk"><rect x="770" y="60" width="140" height="96" rx="8" /><text x="840" y="98" text-anchor="middle">oMLX 0.8.0</text><text class="sub mono" x="840" y="115" text-anchor="middle">127.0.0.1:8000</text><text class="sub" x="840" y="131" text-anchor="middle">verifies the key</text></g>
+
+  <path class="flow bad" d="M374,198 V166" />
+  <text class="cross" x="386" y="186">&#10005;</text>
+  <g class="node bad"><rect x="234" y="198" width="280" height="44" rx="8" /><text x="374" y="217" text-anchor="middle">public internet: no route in</text><text class="sub" x="374" y="233" text-anchor="middle">no DNS record &middot; no open port &middot; Funnel off</text></g>
+
+  <circle class="packet req" r="5">
+    <animateMotion dur="8s" repeatCount="indefinite" path="M105,73 H840" keyPoints="0;1;1" keyTimes="0;0.4;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="8s" repeatCount="indefinite" values="1;1;0;0" keyTimes="0;0.4;0.41;1" />
+  </circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="8s" repeatCount="indefinite" path="M840,143 H105" keyPoints="0;0;1;1" keyTimes="0;0.44;0.82;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.44;0.45;0.82;0.83;1" />
+  </circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="8s" repeatCount="indefinite" path="M840,143 H105" keyPoints="0;0;1;1" keyTimes="0;0.52;0.90;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.52;0.53;0.90;0.91;1" />
+  </circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="8s" repeatCount="indefinite" path="M840,143 H105" keyPoints="0;0;1;1" keyTimes="0;0.60;0.98;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.61;0.98;0.99;1" />
+  </circle>
+</svg>
+<figcaption>
+  The blue token is a request from another of your devices; the green ones are the
+  streamed response. Nothing sits between the two devices that can read it, and
+  nothing reaches the Mac from outside the tailnet.
+</figcaption>
+</figure>
+
+<h3>Tooling</h3>
+<p>
+  In this folder. <strong>just</strong> is the front end; <strong>Python</strong> is one
+  stdlib script that runs on the system <code>python3</code> (3.9);
+  <strong>Rust</strong> is not involved on this route &mdash; the gate belongs to the
+  deferred public hostname.
+</p>
+<pre><code>just up       <span class="cm"># tailscale serve --bg --tcp=8000 tcp://127.0.0.1:8000, after the origin guard</span>
+just down     <span class="cm"># tailscale serve --tcp=8000 off; oMLX keeps running locally</span>
+just status   <span class="cm"># the serve config and what listens on the origin port</span>
+just check    <span class="cm"># scripts/check.py: every check below, exit 1 on any failure</span>
+just url      <span class="cm"># the base URLs to give a client: by name, short, and by tailnet IP</span></code></pre>
+<p>
+  <code>scripts/check.py</code> tests behaviour, not settings: a request with no key
+  must get 401 from the origin and from the tailnet URL, by name and by IP; the serve
+  config must be a TCP forward of port 8000 to the origin; Funnel must be off; oMLX
+  must listen on loopback only. It then reads the settings to explain any failure,
+  lists sub keys by fingerprint, and warns about sleep. <code>just up</code> runs the
+  origin half first and refuses to serve if oMLX would answer without a key.
+</p>
+<div class="phase">
+  <p class="status"><em>Verified 20 Nov 2026 from the Mac itself, by full name, short
+  name and tailnet IP: <code>/v1/models</code> with no key 401, <code>/health</code>
+  200, Funnel off, origin listener still <code>127.0.0.1:8000</code>. Both online
+  peers (<code>apple-m4-pro</code>, <code>stephens-mac-mini</code>) answer a Tailscale
+  ping directly. The guard was also run against a stand-in origin that answers without
+  a key and against a dead port; it failed both, as it should.
+  From a second device the same day (the MacBook Pro, tailnet node
+  <code>apple-m4-pro</code>): by tailnet IP, <code>401 API key required</code> from
+  oMLX, and the request is in oMLX&rsquo;s log &mdash; hosting works end to end. By
+  short name: <code>Could not resolve host</code>, although Tailscale DNS reports
+  enabled on that laptop &mdash; a name-resolution problem there, still open (see
+  below). With a real key, Claude Code and opencode both completed a prompt through
+  the tailnet IP (<a href="#agents">connecting an agent</a>); that run was from this
+  Mac, not yet from the MacBook.</em></p>
+</div>
+
+<h3>If a device cannot resolve the name</h3>
+<p>
+  <code>Could not resolve host</code> is decided on the calling device before anything
+  is sent, so it says nothing about this Mac. On that device, in order:
+</p>
+<pre><code>tailscale status | head -1      <span class="cm"># is Tailscale connected here, and which tailnet node is this device?</span>
+curl -i http://100.72.79.31:8000/v1/models
+                                <span class="cm"># by tailnet IP, no DNS involved: a 401 means the path works and only names are broken</span>
+tailscale dns status | head -4  <span class="cm"># "Tailscale DNS: enabled"? if not: tailscale set --accept-dns=true,</span>
+                                <span class="cm"># or tick "Use Tailscale DNS settings" in the menu-bar app</span></code></pre>
+<p>
+  Until names resolve there, a client on that device can simply use
+  <code>http://100.72.79.31:8000/v1</code>. The address is stable for as long as this
+  Mac stays in the tailnet.
+</p>
+
+<h3>Still to do, by you</h3>
+<ul>
+  <li><strong>Mint a sub key for the MacBook</strong> in the oMLX dashboard, 32 characters or more (<a href="#agents">how</a>), and one for each other device. Until then a remote device would have to carry the main key, which is also the admin credential. <code>just check</code> warns while there are none.</li>
+  <li><strong>Set the agents up on the MacBook</strong> with that key: source <code>clients/claude-omlx.sh</code>, copy <code>clients/opencode.json</code>. It reaches the server by tailnet IP today; its name lookup is still to sort out, or to sidestep with the IP.</li>
+  <li><strong>Decide the power settings.</strong> System sleep is set to 1 minute and is held off only by <code>caffeinate</code> assertions. When the Mac sleeps, the URL stops answering.</li>
+</ul>
+
+<h3>Limits to know</h3>
+<ul>
+  <li><strong>The loopback caveats below still apply, to a small audience.</strong> <code>tailscaled</code> connects to oMLX over loopback, so oMLX&rsquo;s wrong-key lockout does not apply to tailnet devices, and if <code>skip_api_key_verification</code> were switched on, every tailnet device would get inference and the dashboard with no key. With five devices that are all yours this is acceptable; <code>just check</code> is how you confirm it has not changed. If the tailnet ever gains other users, restrict who may reach this Mac&rsquo;s port 8000 in the tailnet access rules first.</li>
+  <li><strong>After a reboot the URL answers 502 until you log in.</strong> <code>tailscaled</code> starts at boot; oMLX is a login agent.</li>
+  <li><strong>The whole server is served, dashboard included.</strong> That is deliberate here: it is how you administer oMLX from another device.</li>
+  <li><strong>To undo:</strong> <code>just down</code>. Nothing else was changed.</li>
+</ul>
+
+<!-- ======================================================= -->
+<h2 id="agents">Connecting an agent</h2>
+<p>
+  A coding agent on another tailnet device needs three things: a key, the base URL,
+  and a model ID. Everything below is what oMLX&rsquo;s own <code>omlx launch</code>
+  sets (oMLX 0.8.0, <code>integrations/claude.py</code> and
+  <code>integrations/opencode.py</code>), with the host pointed at the tailnet instead
+  of loopback.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Thing</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Host</td><td><code>100.72.79.31</code>, or <code>steves-mac-studio</code> on a device where the name resolves; port <code>8000</code></td></tr>
+    <tr><td>Base URL, Anthropic-shaped clients (Claude Code)</td><td><code>http://100.72.79.31:8000</code> &mdash; no <code>/v1</code></td></tr>
+    <tr><td>Base URL, OpenAI-shaped clients (opencode, SDKs)</td><td><code>http://100.72.79.31:8000/v1</code></td></tr>
+    <tr><td>Key</td><td>in <code>$OMLX_KEY</code> on the device; accepted as <code>Authorization: Bearer</code> or as <code>x-api-key</code></td></tr>
+    <tr><td>Models</td><td><code>Qwen3.8-27B-oQ4e-mtp</code> (the one in use), <code>Qwen3.8-Flash-Next-oQ3.5e-mtp</code>, <code>gemma-4-31B-it-oQ4e-mtp</code>. Each reports a 262,144-token context window and a 32,768-token output limit. A model that is not loaded makes the first request wait while it loads.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>The key</h3>
+<p>
+  There are no sub keys yet, so the only key that works today is the main one, which
+  is also the dashboard login. Give each device its own sub key instead; a sub key
+  works for the API and not for the dashboard, and revoking it is one row.
+</p>
+<pre><code>python3 -c "import secrets; print(secrets.token_urlsafe(32))"   <span class="cm"># 43 characters, on any device</span>
+
+<span class="cm"># open http://100.72.79.31:8000/admin, sign in with the main key,
+# add it as a sub key named for the device (macbook, mini, ...)</span>
+
+export OMLX_KEY='...'                                           <span class="cm"># on that device, in ~/.zshrc</span></code></pre>
+
+<h3>Claude Code</h3>
+<p>
+  <code>clients/claude-omlx.sh</code> defines one shell function. Source it from
+  <code>~/.zshrc</code> on the device, after the <code>export OMLX_KEY</code> line:
+</p>
+<pre><code>source ~/dev/eretzutz/dev/docs/omlx/clients/claude-omlx.sh
+
+claude-omlx                                     <span class="cm"># interactive</span>
+claude-omlx -p 'say hi'                         <span class="cm"># one shot</span>
+OMLX_MODEL=gemma-4-31B-it-oQ4e-mtp claude-omlx   <span class="cm"># another model</span>
+OMLX_HOST=steves-mac-studio claude-omlx         <span class="cm"># by name, where it resolves</span></code></pre>
+<p>What the function sets, and why:</p>
+<pre><code>ANTHROPIC_BASE_URL=http://100.72.79.31:8000     <span class="cm"># no /v1: Claude Code adds /v1/messages itself</span>
+ANTHROPIC_AUTH_TOKEN=$OMLX_KEY                  <span class="cm"># sent as Authorization: Bearer</span>
+ANTHROPIC_API_KEY=                              <span class="cm"># emptied: no real Anthropic key goes to oMLX</span>
+ANTHROPIC_MODEL=Qwen3.8-27B-oQ4e-mtp
+ANTHROPIC_DEFAULT_OPUS_MODEL=...                <span class="cm"># opus, sonnet, haiku and the subagents</span>
+ANTHROPIC_DEFAULT_SONNET_MODEL=...              <span class="cm"># all map to the one local model</span>
+ANTHROPIC_DEFAULT_HAIKU_MODEL=...
+CLAUDE_CODE_SUBAGENT_MODEL=...
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144           <span class="cm"># the model's real window,</span>
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=262144          <span class="cm"># and compaction measured against it</span>
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1      <span class="cm"># no telemetry or background calls to Anthropic</span>
+CLAUDE_CODE_ATTRIBUTION_HEADER=0
+API_TIMEOUT_MS=3000000                          <span class="cm"># 50 minutes: a cold model loads before it answers</span>
+claude --settings '{"useAutoModeDuringPlan":false}' --disallowedTools LSP "$@"</code></pre>
+<p class="small">
+  Two lines Claude Code prints on start are expected here: a notice that claude.ai
+  connectors are disabled because another auth source is set, and
+  <code>unrecognized_model</code> for the local model&rsquo;s name. The two flags on the
+  last line are oMLX&rsquo;s defaults for a local model: planning asks for approval
+  instead of using a classifier that can time out during a long prompt read, and the
+  LSP tool is off because its schema arriving mid-session would make the server
+  re-read the whole conversation.
+</p>
+
+<h3>opencode</h3>
+<p>
+  <code>clients/opencode.json</code> registers the server as a provider named
+  <code>omlx</code> with all three models, and takes the key from the environment
+  (<code>{env:OMLX_KEY}</code>), so no key is written to disk. Copy it to
+  <code>~/.config/opencode/opencode.json</code> for every project, or to
+  <code>opencode.json</code> in one project; if a global file already exists, merge
+  the <code>provider.omlx</code> block into it instead of overwriting.
+</p>
+<pre><code>cp ~/dev/eretzutz/dev/docs/omlx/clients/opencode.json ~/.config/opencode/opencode.json
+
+<span class="cm"># interactive; the default model is omlx/Qwen3.8-27B-oQ4e-mtp</span>
+opencode
+<span class="cm"># one shot, another model</span>
+opencode run -m omlx/gemma-4-31B-it-oQ4e-mtp 'say hi'</code></pre>
+<pre><code>"omlx": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "oMLX",
+  "options": {
+    "baseURL": "http://100.72.79.31:8000/v1",              <span class="cm">// with /v1, unlike Claude Code</span>
+    "apiKey": "{env:OMLX_KEY}"
+  },
+  "models": { "Qwen3.8-27B-oQ4e-mtp": { "limit": { "context": 262144, "output": 32768 }, ... }, ... }
+}</code></pre>
+
+<h3>Shortcut, where the <code>omlx</code> CLI is installed</h3>
+<pre><code>omlx launch claude   --host 100.72.79.31 --api-key "$OMLX_KEY"
+omlx launch opencode --host 100.72.79.31 --api-key "$OMLX_KEY" --model Qwen3.8-27B-oQ4e-mtp</code></pre>
+<p class="small">
+  It asks the server for the model list and context windows and sets the same
+  variables. For opencode it writes the key into
+  <code>~/.config/opencode/opencode.json</code> in plain text, which the file in
+  <code>clients/</code> avoids.
+</p>
+
+<h3>Check the key before starting an agent</h3>
+<pre><code><span class="cm"># should list the three models</span>
+curl -s -H "Authorization: Bearer $OMLX_KEY" http://100.72.79.31:8000/v1/models</code></pre>
+
+<div class="phase">
+  <p class="status"><em>Verified 20 Nov 2026 on the Mac Studio, through the tailnet
+  IP, with the files in <code>clients/</code> as committed: Claude Code 2.1.329,
+  <code>claude-omlx -p</code>, answered in 15&nbsp;s; opencode 1.19.6,
+  <code>opencode run</code>, answered in 13&nbsp;s; both requests are in oMLX&rsquo;s
+  log against <code>Qwen3.8-27B-oQ4e-mtp</code>. opencode with no key in the
+  environment failed with <code>API key required</code>, so the key really comes from
+  <code>$OMLX_KEY</code>. Not yet run from the MacBook, and not yet with a sub key:
+  the test used the main key, read locally and never printed.</em></p>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="where">Where it is</h2>
+<p>Read from this Mac on 20 Nov 2026. Every check was read-only.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Thing</th><th>Measured</th></tr></thead>
+  <tbody>
+    <tr><td>Host</td><td>Mac Studio, Apple M5 Ultra, 96&nbsp;GB, macOS 27.2</td></tr>
+    <tr><td>oMLX</td><td>0.8.0 from Homebrew (<code>jundot/omlx/omlx</code>), package at <code>/opt/homebrew/Cellar/omlx/0.8.0/libexec</code>; also <code>/Applications/oMLX.app</code> and the <code>~/.omlx/bin/omlx</code> wrapper</td></tr>
+    <tr><td>Supervisor</td><td>launchd agent <code>sh.brew.omlx</code> (<code>~/Library/LaunchAgents/sh.brew.omlx.plist</code>): <code>omlx serve</code>, <code>RunAtLoad</code>, <code>KeepAlive</code>, log at <code>/opt/homebrew/var/log/omlx.log</code></td></tr>
+    <tr><td>Listener</td><td><code>127.0.0.1:8000</code> only</td></tr>
+    <tr><td>Auth settings</td><td><code>~/.omlx/settings.json</code>: main <code>api_key</code> set (20 characters), <code>sub_keys</code> empty, <code>skip_api_key_verification</code> false, <code>allow_unauthenticated_inference</code> false</td></tr>
+    <tr><td>Serving settings</td><td><code>sse_keepalive_mode: chunk</code>, <code>max_concurrent_requests: 8</code>, <code>max_request_body_size: 512MB</code>, <code>cors_origins: ["*"]</code>, <code>mcp.expose_tools: true</code> with no MCP config</td></tr>
+    <tr><td>Models</td><td>three under <code>~/.omlx/models/Jundot</code> (gemma-4-31B, Qwen3.8-27B, Qwen3.8-Flash-Next)</td></tr>
+    <tr><td>DNS</td><td><code>xilia.net</code> nameservers are Cloudflare&rsquo;s; the apex and <code>www</code> are proxied and serve a live site; <code>omlx.xilia.net</code> does not resolve; a random subdomain does not resolve (no wildcard)</td></tr>
+    <tr><td>Tunnel tooling</td><td><code>cloudflared</code> not installed (Homebrew stable is 2026.11.1); no <code>~/.cloudflared</code> directory</td></tr>
+    <tr><td>Other tooling</td><td><code>just</code> 1.59.0, <code>cargo</code> 1.100.0, system <code>python3</code> 3.9.6, <code>tailscale</code> (five devices, Serve and Funnel unconfigured). Not on <code>PATH</code>: <code>uv</code>, <code>wrangler</code>, <code>gcloud</code></td></tr>
+    <tr><td>Power</td><td><code>pmset</code>: <code>sleep 1</code> (currently prevented by <code>caffeinate</code> and others), <code>autorestart 0</code>, <code>womp 1</code></td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  The closest prior art is <code>atuin-host</code>: an Atuin server behind a locally-managed
+  tunnel on <code>atuin.withcreo.ai</code>, with the recipes in
+  <code>just/tunnel.just</code>. This plan ports those recipes, including the fixes
+  already made there (exact tunnel-name match, a tunnel-id lookup that can fail). That
+  tunnel lives on a different zone, which matters in <a href="#decisions">D11</a>.
+</p>
+
+<!-- ======================================================= -->
+<h2 id="findings">What forwarding changes</h2>
+<p>
+  Anything on the Mac that forwards outside traffic to oMLX &mdash;
+  <code>tailscaled</code> today, <code>cloudflared</code> in the deferred plan &mdash;
+  connects to it over loopback. From oMLX&rsquo;s side, a request from anywhere has the
+  peer address <code>127.0.0.1</code>. Four things in oMLX 0.8.0 depend on that address
+  or on the bind being loopback. Paths are relative to the package directory above.
+  With a tailnet of your own devices these are caveats; with a public hostname they are
+  the reason for the gate.
+</p>
+
+<h3>1. The wrong-key lockout does not apply to loopback peers</h3>
+<p>
+  <code>admin/auth.py:263&ndash;289</code>. <code>_client_key()</code> returns
+  <code>None</code> for a loopback peer, and <code>check_api_key()</code> then verifies
+  with no failure budget (&ldquo;Clients on this machine are not limited&rdquo;). The
+  budget is otherwise 8 wrong keys, then a 30&nbsp;s lockout, then 300&nbsp;s. Through a
+  tunnel, key guessing is unlimited.
+</p>
+
+<h3>2. One setting removes authentication on a loopback bind</h3>
+<p>
+  <code>server.py:393&ndash;407</code> and <code>admin/auth.py:386&ndash;420</code>. With
+  <code>skip_api_key_verification</code> on and a loopback bind, both inference and the
+  whole admin API accept requests with no key; the same is true if the key is removed.
+  The reasoning is &ldquo;loopback bind means local callers only&rdquo;, and a tunnel
+  keeps the loopback bind while making the callers public. The setting is off today.
+  It is a dashboard toggle, so the plan must not depend on it staying off.
+</p>
+
+<h3>3. Several routes answer without a key</h3>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Path</th><th>Without a key, on loopback and on the tailnet today</th><th>On a public hostname</th></tr></thead>
+  <tbody>
+    <tr><td><code>/admin</code></td><td>200, the login page (about a hundred admin routes sit behind it)</td><td><span class="tag bad">not published</span> tailnet only</td></tr>
+    <tr><td><code>/docs</code>, <code>/openapi.json</code></td><td>200, the full route list</td><td><span class="tag bad">not published</span></td></tr>
+    <tr><td><code>/health</code></td><td>200</td><td><span class="tag bad">not published</span></td></tr>
+    <tr><td><code>/api/status</code></td><td>401</td><td><span class="tag bad">not published</span></td></tr>
+    <tr><td><code>/v1/models</code></td><td>401</td><td><span class="tag ok">published</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>4. <code>/v1/</code> is not all inference</h3>
+<p>
+  A sub key also reaches <code>/v1/mcp/execute</code> (run an MCP tool on this Mac),
+  <code>/v1/web/fetch</code> (the server fetches a URL for you),
+  <code>/v1/models/{id}/load</code> and <code>/unload</code>, and the audio and realtime
+  routes. A filter of &ldquo;anything under <code>/v1/</code>&rdquo; would publish all of
+  them. Separately, the only length rule for a key is four characters
+  (<code>admin/auth.py:328&ndash;359</code>), so key strength is ours to enforce.
+</p>
+
+<div class="warn">
+  <strong>None of this is a bug in oMLX.</strong> These are sensible defaults for a
+  server that binds loopback. They stop being true the moment a local process forwards
+  the internet to it &mdash; and that applies equally to <code>tailscale serve</code>,
+  an SSH forward, or any reverse proxy on the Mac, not only to Cloudflare.
+</div>
+
+<!-- ======================================================= -->
+<h2 id="deferred">Deferred: the public hostname</h2>
+<p>
+  Everything from here to <a href="#files">Files</a> is the plan for
+  <code>https://omlx.xilia.net</code> through a Cloudflare Tunnel. None of it has been
+  built or installed. It is kept because the research is done and the design holds;
+  build it when a caller that cannot join the tailnet needs the API. The order does
+  not change: the gate first, on loopback, then the tunnel.
+</p>
+<p>
+  What already exists carries over. The <code>justfile</code> here grows the tunnel
+  recipes rather than being replaced, and <code>scripts/check.py</code> is the origin
+  half of what the plan below calls <code>preflight.py</code>.
+</p>
+
+<!-- ======================================================= -->
+<h2 id="decisions">Decisions</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>#</th><th>Decision</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>D1</td><td>Cloudflare Tunnel, named <code>omlx</code>, locally managed: a credentials JSON and a config file on the Mac</td><td>The zone is already on Cloudflare, so the hostname costs nothing and needs no new account. Locally managed matches <code>atuin-host</code>, keeps the ingress rules in a reviewable file, and lets <code>cloudflared tunnel ingress validate</code> test them offline. The dashboard-managed kind keeps the rules in the dashboard instead.</td></tr>
+    <tr><td>D2</td><td>oMLX is not reconfigured: same bind, same port, same launchd job. The only change to its settings is adding sub keys.</td><td>Local use (<code>omlx launch &hellip;</code>, the dashboard) keeps working exactly as now, and taking the tunnel down returns the Mac to today&rsquo;s state.</td></tr>
+    <tr><td>D3</td><td><code>omlx-gate</code> sits between cloudflared and oMLX on <code>127.0.0.1:8100</code>; cloudflared never points at <code>:8000</code></td><td>Findings 1&ndash;4. The policy that matters has to run on the Mac, in code we own, and must not depend on a setting in someone else&rsquo;s dashboard.</td></tr>
+    <tr><td>D4</td><td>The gate&rsquo;s allowlist is method + exact path, default deny, in <code>gate.toml</code>. The two outer layers (cloudflared ingress, edge rule) use one coarse rule: <code>^/v1/</code></td><td>One precise list in one place. The outer layers only shed obvious noise (<code>/admin</code>, <code>/.env</code>, scanners) before it reaches the Mac, so they cannot drift out of sync with the list.</td></tr>
+    <tr><td>D5</td><td>Remote clients get oMLX sub keys: one per client, named, at least 32 random characters. The main key never leaves the Mac. The gate stores no keys.</td><td>The main key is the admin credential; sub keys are inference-only by oMLX&rsquo;s own rule. One key per client makes a leak a one-row revocation. oMLX stays the only key store.</td></tr>
+    <tr><td>D6</td><td>The gate restores the lockout, keyed on <code>CF-Connecting-IP</code>, with oMLX&rsquo;s own numbers (8 wrong keys, 30&nbsp;s, then 300&nbsp;s)</td><td>Finding 1. The gate sees the upstream 401s and the real client address; oMLX sees neither usefully. The header is trustworthy here because the gate&rsquo;s only client is cloudflared on loopback.</td></tr>
+    <tr><td>D7</td><td>A canary: every 15&nbsp;s the gate sends oMLX a request with no key and expects 401. Anything else and the gate answers 503 to everyone until it is 401 again.</td><td>Finding 2. It tests behaviour, not a settings file, so it also catches a removed key, a future default change, or a setting this plan does not know about.</td></tr>
+    <tr><td>D8</td><td>The admin dashboard is never on the public hostname. Remote admin goes over Tailscale.</td><td>It can download models, change settings and holds upload tokens. Your devices are already on the tailnet.</td></tr>
+    <tr><td>D9</td><td>Remote clients stream. Non-streaming requests are allowed but bounded by the edge&rsquo;s idle limit.</td><td>The edge gives up on a response after roughly 100&ndash;120&nbsp;s with no bytes (error 524). <code>sse_keepalive_mode: chunk</code>, already set, sends keep-alive chunks while the model reads a long prompt. A non-streaming request sends nothing until it is finished.</td></tr>
+    <tr><td>D10</td><td>Gate and tunnel run as launchd <em>agents</em> in the user session, not boot-time daemons</td><td>oMLX is an agent and only exists after login. A tunnel that comes up at boot would front an origin that is not there.</td></tr>
+    <tr><td>D11</td><td>cloudflared&rsquo;s files get their own names: <code>~/.cloudflared/xilia.net.pem</code> for the login certificate, <code>omlx.yml</code> for the config</td><td>A login certificate is scoped to one zone. If a certificate for another zone is in the default place (the Atuin tunnel is on <code>withcreo.ai</code>), <code>tunnel route dns</code> creates the record in that zone. Separate names let both tunnels share a machine.</td></tr>
+    <tr><td>D12</td><td>Edge rules are scoped with <code>http.host eq "omlx.xilia.net"</code> and applied read-modify-write</td><td>The zone serves a live site. A rule without the host clause, or an API call that replaces a ruleset, would change that site&rsquo;s behaviour.</td></tr>
+    <tr><td>D13</td><td>The tooling lives beside this file, in <code>docs/omlx/</code></td><td>The repo&rsquo;s one precedent (<code>docs/git/justfile</code>) keeps a topic&rsquo;s tooling in its folder. A separate repo like <code>atuin-host</code> is the alternative (<a href="#open">open question</a>).</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="flow">Data flow</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 420" role="img" aria-labelledby="dA-t dA-d">
+  <title id="dA-t">How a request travels from a client to oMLX and back, and where each kind of bad request stops</title>
+  <desc id="dA-d">Top row, left to right: a client with a sub key; the Cloudflare edge, which terminates TLS for omlx.xilia.net and applies a path rule and a rate limit; cloudflared on the Mac, joined to the edge by a tunnel it dialled outbound, forwarding paths under /v1/ to the gate and answering 404 for the rest; omlx-gate on 127.0.0.1:8100, which applies the route allowlist and the lockout; and oMLX on 127.0.0.1:8000, which verifies the key. Requests flow right, streamed responses flow left. Under each stage is where rejected requests end: blocked at the edge, 404 from cloudflared, 401 404 429 or 503 from the gate, and 401 from oMLX for a wrong key, which the gate counts. An arc from the gate to oMLX is the canary: a request with no key every 15 seconds that must be answered 401. Bottom: a timeline showing keep-alive chunks during prefill and tokens during generation; each gap must stay under the edge's idle limit.</desc>
+  <defs>
+    <marker id="dA-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+
+  <text class="lane" x="10" y="18">INTERNET</text>
+  <text class="lane" x="190" y="18">CLOUDFLARE EDGE</text>
+  <text class="lane" x="395" y="18">MAC STUDIO &mdash; EVERY LISTENER IS 127.0.0.1</text>
+  <rect class="group" x="383" y="30" width="533" height="262" rx="10" />
+
+  <path class="flow par" d="M660,82 C660,50 842,50 842,82" />
+  <text class="lbl" x="751" y="46" text-anchor="middle">canary, every 15 s: no key &rarr; must be 401</text>
+
+  <!-- requests ride the top band of each box (y=95), responses the bottom band (y=167), clear of the labels -->
+  <path class="flow req" d="M150,95 H188" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M355,95 H393" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M545,95 H583" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M735,95 H773" marker-end="url(#dA-arrow)" />
+  <path class="flow res" d="M775,167 H737" marker-end="url(#dA-arrow)" />
+  <path class="flow res" d="M585,167 H547" marker-end="url(#dA-arrow)" />
+  <path class="flow res" d="M395,167 H357" marker-end="url(#dA-arrow)" />
+  <path class="flow res" d="M190,167 H152" marker-end="url(#dA-arrow)" />
+  <text class="lbl" x="376" y="196" text-anchor="end">tunnel, dialled</text>
+  <text class="lbl" x="376" y="210" text-anchor="end">outbound</text>
+
+  <g class="node"><rect x="10" y="82" width="140" height="96" rx="8" /><text x="80" y="118" text-anchor="middle">client</text><text class="sub" x="80" y="136" text-anchor="middle">SDK &middot; curl &middot; agent</text><text class="sub mono" x="80" y="153" text-anchor="middle">Bearer &lt;sub key&gt;</text></g>
+  <g class="node acc"><rect x="190" y="82" width="165" height="96" rx="8" /><text x="272" y="118" text-anchor="middle">Cloudflare edge</text><text class="sub" x="272" y="136" text-anchor="middle">TLS for omlx.xilia.net</text><text class="sub" x="272" y="153" text-anchor="middle">path rule &middot; rate limit</text></g>
+  <g class="node"><rect x="395" y="82" width="150" height="96" rx="8" /><text x="470" y="118" text-anchor="middle">cloudflared</text><text class="sub" x="470" y="136" text-anchor="middle">ingress: ^/v1/ &rarr; gate</text><text class="sub" x="470" y="153" text-anchor="middle">anything else &rarr; 404</text></g>
+  <g class="node ok"><rect x="585" y="82" width="150" height="96" rx="8" /><text x="660" y="118" text-anchor="middle">omlx-gate</text><text class="sub mono" x="660" y="136" text-anchor="middle">127.0.0.1:8100</text><text class="sub" x="660" y="153" text-anchor="middle">allowlist &middot; lockout</text></g>
+  <g class="node unk"><rect x="775" y="82" width="135" height="96" rx="8" /><text x="842" y="118" text-anchor="middle">oMLX 0.8.0</text><text class="sub mono" x="842" y="136" text-anchor="middle">127.0.0.1:8000</text><text class="sub" x="842" y="153" text-anchor="middle">verifies the key</text></g>
+
+  <path class="flow bad" d="M272,178 V223" marker-end="url(#dA-arrow)" />
+  <path class="flow bad" d="M470,178 V223" marker-end="url(#dA-arrow)" />
+  <path class="flow bad" d="M660,178 V223" marker-end="url(#dA-arrow)" />
+  <path class="flow bad" d="M842,178 V223" marker-end="url(#dA-arrow)" />
+  <path class="flow bad" d="M775,251 H737" marker-end="url(#dA-arrow)" />
+
+  <g class="node bad"><rect x="190" y="225" width="165" height="52" rx="8" /><text x="272" y="247" text-anchor="middle">blocked at the edge</text><text class="sub" x="272" y="264" text-anchor="middle">outside /v1/ &middot; floods</text></g>
+  <g class="node bad"><rect x="395" y="225" width="150" height="52" rx="8" /><text x="470" y="247" text-anchor="middle">404</text><text class="sub" x="470" y="264" text-anchor="middle">no ingress rule matched</text></g>
+  <g class="node bad"><rect x="585" y="225" width="150" height="52" rx="8" /><text x="660" y="247" text-anchor="middle">401 &middot; 404 &middot; 429 &middot; 503</text><text class="sub" x="660" y="264" text-anchor="middle">decided before the origin</text></g>
+  <g class="node bad"><rect x="775" y="225" width="135" height="52" rx="8" /><text x="842" y="247" text-anchor="middle">401 wrong key</text><text class="sub" x="842" y="264" text-anchor="middle">counted by the gate</text></g>
+
+  <text class="lane" x="10" y="326">WHY REMOTE CLIENTS STREAM &mdash; THE EDGE TIMES SILENCE, NOT LENGTH</text>
+  <path class="wire" d="M110,362 V354 H220 V362" />
+  <text class="lbl" x="232" y="358">this gap must stay under the edge&rsquo;s idle limit (about 100&ndash;120 s) or the client gets a 524</text>
+  <line class="axis" x1="40" y1="376" x2="890" y2="376" />
+  <circle class="pulse dot-ka" cx="110" cy="376" r="5" />
+  <circle class="pulse dot-ka" cx="220" cy="376" r="5" style="animation-delay: .3s" />
+  <circle class="pulse dot-ka" cx="330" cy="376" r="5" style="animation-delay: .6s" />
+  <circle class="pulse dot-tok" cx="420" cy="376" r="4" style="animation-delay: .9s" />
+  <circle class="pulse dot-tok" cx="450" cy="376" r="4" style="animation-delay: 1s" />
+  <circle class="pulse dot-tok" cx="480" cy="376" r="4" style="animation-delay: 1.1s" />
+  <circle class="pulse dot-tok" cx="510" cy="376" r="4" style="animation-delay: 1.2s" />
+  <circle class="pulse dot-tok" cx="540" cy="376" r="4" style="animation-delay: 1.3s" />
+  <circle class="pulse dot-tok" cx="570" cy="376" r="4" style="animation-delay: 1.4s" />
+  <circle class="pulse dot-tok" cx="600" cy="376" r="4" style="animation-delay: 1.5s" />
+  <circle class="pulse dot-tok" cx="630" cy="376" r="4" style="animation-delay: 1.6s" />
+  <circle class="pulse dot-tok" cx="660" cy="376" r="4" style="animation-delay: 1.7s" />
+  <circle class="pulse dot-tok" cx="690" cy="376" r="4" style="animation-delay: 1.8s" />
+  <circle class="pulse dot-tok" cx="720" cy="376" r="4" style="animation-delay: 1.9s" />
+  <circle class="pulse dot-tok" cx="750" cy="376" r="4" style="animation-delay: 2s" />
+  <circle class="pulse dot-tok" cx="780" cy="376" r="4" style="animation-delay: 2.1s" />
+  <circle class="pulse dot-tok" cx="810" cy="376" r="4" style="animation-delay: 2.2s" />
+  <circle class="pulse dot-tok" cx="840" cy="376" r="4" style="animation-delay: 2.3s" />
+  <circle class="pulse dot-tok" cx="870" cy="376" r="4" style="animation-delay: 2.4s" />
+  <text class="lbl" x="220" y="402" text-anchor="middle">prefill: oMLX sends keep-alive chunks</text>
+  <text class="lbl" x="645" y="402" text-anchor="middle">generation: every token resets the timer</text>
+
+  <circle class="packet req" r="5">
+    <animateMotion dur="10s" repeatCount="indefinite" path="M80,95 H842" keyPoints="0;1;1" keyTimes="0;0.38;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="10s" repeatCount="indefinite" values="1;1;0;0" keyTimes="0;0.38;0.39;1" />
+  </circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="10s" repeatCount="indefinite" path="M842,167 H80" keyPoints="0;0;1;1" keyTimes="0;0.42;0.80;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.42;0.43;0.80;0.81;1" />
+  </circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="10s" repeatCount="indefinite" path="M842,167 H80" keyPoints="0;0;1;1" keyTimes="0;0.48;0.86;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.48;0.49;0.86;0.87;1" />
+  </circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="10s" repeatCount="indefinite" path="M842,167 H80" keyPoints="0;0;1;1" keyTimes="0;0.54;0.92;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.54;0.55;0.92;0.93;1" />
+  </circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="10s" repeatCount="indefinite" path="M842,167 H80" keyPoints="0;0;1;1" keyTimes="0;0.60;0.98;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.61;0.98;0.99;1" />
+  </circle>
+  <!-- refused requests: along the request band, hidden while they drop through the box's labels, then down the red arrow -->
+  <circle class="packet bad" r="5" opacity="0">
+    <animateMotion dur="10s" begin="3s" repeatCount="indefinite" path="M80,95 H272 V221" keyPoints="0;0.604;0.865;1;1" keyTimes="0;0.18;0.20;0.30;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="10s" begin="3s" repeatCount="indefinite" values="1;1;0;0;1;1;0;0" keyTimes="0;0.175;0.18;0.20;0.205;0.30;0.31;1" />
+  </circle>
+  <circle class="packet bad" r="5" opacity="0">
+    <animateMotion dur="10s" begin="6.5s" repeatCount="indefinite" path="M80,95 H660 V221" keyPoints="0;0.822;0.939;1;1" keyTimes="0;0.36;0.38;0.46;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="10s" begin="6.5s" repeatCount="indefinite" values="1;1;0;0;1;1;0;0" keyTimes="0;0.355;0.36;0.38;0.385;0.46;0.47;1" />
+  </circle>
+  <circle class="packet tok2" r="4">
+    <animateMotion dur="5s" repeatCount="indefinite" path="M660,82 C660,50 842,50 842,82" keyPoints="0;1;0" keyTimes="0;0.5;1" calcMode="linear" />
+  </circle>
+</svg>
+<figcaption>
+  The blue token is one request crossing all five stages; the green ones are its
+  response, streamed back a chunk at a time. Red tokens are requests that stop early:
+  one at the edge, one at the gate. The gate&rsquo;s four refusals are 401 (no key
+  sent), 404 (route not on the list), 429 (locked out, or too many requests in flight)
+  and 503 (origin down, or the canary saw oMLX answer without a key). Cloudflare
+  terminates TLS, so prompts and completions pass through its edge in plaintext.
+</figcaption>
+</figure>
+
+<!-- ======================================================= -->
+<h2 id="process">Process</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 404" role="img" aria-labelledby="dB-t dB-d">
+  <title id="dB-t">The one-time setup as a chain of recipes, and what launchd does at every login</title>
+  <desc id="dB-d">Top lane, once: seven recipes in order. Preflight checks that a keyless request to oMLX gets 401. Gate-build runs cargo test and starts the gate agent on port 8100. Tunnel-login opens a browser to choose the zone xilia.net. Tunnel-create makes the tunnel named omlx and its credentials file. Tunnel-route creates the proxied CNAME. Render and up write omlx.yml and the launchd plists and start the agents. Smoke tests auth, paths and streaming from outside. The steps group into phases P0 posture, P1 gate, P2 tunnel, P3 proof. Bottom lane, every login: launchd starts three agents at once and restarts any that exits. Readiness chains left to right: sh.brew.omlx is ready when /health is 200; the gate is ready when its canary saw 401; the tunnel is ready when its edge connections are up; then omlx.xilia.net is live. Under each: what a client sees if that piece is missing. Origin down, the gate answers 503. Gate down or canary tripped, 502 from the edge or 503 from the gate. Tunnel down, the edge answers 530 with error 1033. Mac asleep or logged out, the same as tunnel down.</desc>
+  <defs>
+    <marker id="dB-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+
+  <text class="lane" x="10" y="18">ONCE &mdash; JUST SETUP: EVERY STEP IS A RECIPE THAT CAN BE RE-RUN</text>
+  <path class="flow req" d="M122,67 H139" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M253,67 H270" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M384,67 H401" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M515,67 H532" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M646,67 H663" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M777,67 H794" marker-end="url(#dB-arrow)" />
+
+  <g class="node unk"><rect x="10" y="34" width="112" height="66" rx="8" /><text class="mono" x="66" y="58" text-anchor="middle">preflight</text><text class="sub" x="66" y="75" text-anchor="middle">keyless &rarr; 401?</text><text class="sub" x="66" y="90" text-anchor="middle">python, read-only</text></g>
+  <g class="node ok"><rect x="141" y="34" width="112" height="66" rx="8" /><text class="mono" x="197" y="58" text-anchor="middle">gate-build</text><text class="sub" x="197" y="75" text-anchor="middle">cargo test</text><text class="sub" x="197" y="90" text-anchor="middle">agent on :8100</text></g>
+  <g class="node"><rect x="272" y="34" width="112" height="66" rx="8" /><text class="mono" x="328" y="58" text-anchor="middle">tunnel-login</text><text class="sub" x="328" y="75" text-anchor="middle">browser: choose</text><text class="sub" x="328" y="90" text-anchor="middle">zone xilia.net</text></g>
+  <g class="node"><rect x="403" y="34" width="112" height="66" rx="8" /><text class="mono" x="459" y="58" text-anchor="middle">tunnel-create</text><text class="sub" x="459" y="75" text-anchor="middle">named &ldquo;omlx&rdquo;</text><text class="sub mono" x="459" y="90" text-anchor="middle">&lt;uuid&gt;.json</text></g>
+  <g class="node"><rect x="534" y="34" width="112" height="66" rx="8" /><text class="mono" x="590" y="58" text-anchor="middle">tunnel-route</text><text class="sub" x="590" y="75" text-anchor="middle">proxied CNAME</text><text class="sub" x="590" y="90" text-anchor="middle">omlx &rarr; tunnel</text></g>
+  <g class="node"><rect x="665" y="34" width="112" height="66" rx="8" /><text class="mono" x="721" y="58" text-anchor="middle">render &middot; up</text><text class="sub" x="721" y="75" text-anchor="middle">omlx.yml + plists</text><text class="sub" x="721" y="90" text-anchor="middle">launchd agents</text></g>
+  <g class="node acc"><rect x="796" y="34" width="112" height="66" rx="8" /><text class="mono" x="852" y="58" text-anchor="middle">smoke</text><text class="sub" x="852" y="75" text-anchor="middle">from outside:</text><text class="sub" x="852" y="90" text-anchor="middle">auth &middot; paths &middot; SSE</text></g>
+
+  <path class="wire" d="M10,110 H122" /><text class="lbl" x="66" y="126" text-anchor="middle">P0 posture</text>
+  <path class="wire" d="M141,110 H253" /><text class="lbl" x="197" y="126" text-anchor="middle">P1 gate</text>
+  <path class="wire" d="M272,110 H777" /><text class="lbl" x="524" y="126" text-anchor="middle">P2 tunnel</text>
+  <path class="wire" d="M796,110 H908" /><text class="lbl" x="852" y="126" text-anchor="middle">P3 proof</text>
+
+  <text class="lane" x="10" y="160">EVERY LOGIN &mdash; LAUNCHD STARTS ALL THREE; READINESS CHAINS LEFT TO RIGHT</text>
+  <g class="node"><rect x="10" y="172" width="898" height="30" rx="6" /><text x="459" y="192" text-anchor="middle">launchd, user session &mdash; RunAtLoad + KeepAlive: starts all three at login, restarts any that exits</text></g>
+  <path class="flow par" d="M150,202 V222" marker-end="url(#dB-arrow)" />
+  <path class="flow par" d="M380,202 V222" marker-end="url(#dB-arrow)" />
+  <path class="flow par" d="M610,202 V222" marker-end="url(#dB-arrow)" />
+  <path class="flow res" d="M240,257 H288" marker-end="url(#dB-arrow)" />
+  <path class="flow res" d="M470,257 H518" marker-end="url(#dB-arrow)" />
+  <path class="flow res" d="M700,257 H748" marker-end="url(#dB-arrow)" />
+
+  <g class="node unk"><rect x="60" y="224" width="180" height="66" rx="8" /><text class="mono" x="150" y="248" text-anchor="middle">sh.brew.omlx</text><text class="sub" x="150" y="265" text-anchor="middle">omlx serve on :8000</text><text class="sub" x="150" y="280" text-anchor="middle">ready: /health is 200</text></g>
+  <g class="node ok"><rect x="290" y="224" width="180" height="66" rx="8" /><text class="mono" x="380" y="248" text-anchor="middle">net.xilia.omlx-gate</text><text class="sub" x="380" y="265" text-anchor="middle">omlx-gate on :8100</text><text class="sub" x="380" y="280" text-anchor="middle">ready: canary saw 401</text></g>
+  <g class="node"><rect x="520" y="224" width="180" height="66" rx="8" /><text class="mono" x="610" y="248" text-anchor="middle">net.xilia.omlx-tunnel</text><text class="sub" x="610" y="265" text-anchor="middle">cloudflared tunnel run</text><text class="sub" x="610" y="280" text-anchor="middle">ready: edge connections up</text></g>
+  <g class="node acc"><rect x="750" y="224" width="158" height="66" rx="8" /><text x="829" y="250" text-anchor="middle">live</text><text class="sub mono" x="829" y="270" text-anchor="middle">omlx.xilia.net/v1</text></g>
+
+  <path class="flow bad" d="M150,290 V316" marker-end="url(#dB-arrow)" />
+  <path class="flow bad" d="M380,290 V316" marker-end="url(#dB-arrow)" />
+  <path class="flow bad" d="M610,290 V316" marker-end="url(#dB-arrow)" />
+  <path class="flow bad" d="M829,290 V316" marker-end="url(#dB-arrow)" />
+  <g class="node bad"><rect x="60" y="318" width="180" height="52" rx="8" /><text x="150" y="340" text-anchor="middle">origin down</text><text class="sub" x="150" y="357" text-anchor="middle">gate answers 503 at once</text></g>
+  <g class="node bad"><rect x="290" y="318" width="180" height="52" rx="8" /><text x="380" y="340" text-anchor="middle">gate down or canary tripped</text><text class="sub" x="380" y="357" text-anchor="middle">edge 502 &middot; gate 503</text></g>
+  <g class="node bad"><rect x="520" y="318" width="180" height="52" rx="8" /><text x="610" y="340" text-anchor="middle">tunnel down</text><text class="sub" x="610" y="357" text-anchor="middle">edge answers 530 (error 1033)</text></g>
+  <g class="node bad"><rect x="750" y="318" width="158" height="52" rx="8" /><text x="829" y="340" text-anchor="middle">asleep or logged out</text><text class="sub" x="829" y="357" text-anchor="middle">same as tunnel down</text></g>
+  <text class="lane" x="10" y="394">WHAT A CLIENT SEES WHEN A PIECE IS MISSING</text>
+
+  <!-- the setup bead runs on the phase rail under the recipes, pausing below each one -->
+  <circle class="packet req" r="5">
+    <animateMotion dur="14s" repeatCount="indefinite" path="M66,110 H852" calcMode="linear"
+      keyPoints="0;0;0.1667;0.1667;0.3333;0.3333;0.5;0.5;0.6667;0.6667;0.8333;0.8333;1;1"
+      keyTimes="0;0.08;0.14;0.22;0.28;0.36;0.42;0.5;0.56;0.64;0.7;0.78;0.84;1" />
+  </circle>
+  <!-- readiness pauses on each arrow between agents, then fades as it reaches "live" -->
+  <circle class="packet res" r="5">
+    <animateMotion dur="9s" repeatCount="indefinite" path="M264,257 H829" calcMode="linear"
+      keyPoints="0;0;0.407;0.407;0.814;0.814;1;1"
+      keyTimes="0;0.15;0.27;0.45;0.57;0.75;0.85;1" />
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0" keyTimes="0;0.78;0.85;1" />
+  </circle>
+</svg>
+<figcaption>
+  Top: the blue bead pauses under each recipe in the order <code>just setup</code> runs
+  them. Bottom: the green token is readiness passing down the chain &mdash; the gate
+  does not report ready until oMLX has refused a keyless request, and <code>just up</code>
+  does not start the tunnel until the gate is ready. The red boxes are the failure a
+  client sees for each missing piece; all of them are fast, explicit status codes
+  rather than hangs.
+</figcaption>
+</figure>
+
+<!-- ======================================================= -->
+<h2 id="tooling">Tooling: Rust, Python, just</h2>
+<p>
+  The split is the usual one. Rust is the part that sits in the request path and must
+  stream without buffering. Python is stdlib-only scripts that check and render, one job
+  each, runnable on the Mac&rsquo;s own <code>python3</code> (3.9.6: no
+  <code>tomllib</code>, no <code>match</code>). <code>just</code> is the only thing you
+  type.
+</p>
+
+<h3>Rust &mdash; <code>omlx-gate</code></h3>
+<p>
+  One crate, one binary, edition 2024 like <code>mcp-conventions</code>. tokio, hyper
+  and hyper-util for a streaming server and client, serde + toml, clap, tracing. No TLS
+  code at all: both sides are loopback. Three subcommands:
+</p>
+<ul>
+  <li><code>omlx-gate serve --config gate.toml</code> &mdash; the proxy on <code>:8100</code>, plus <code>/ready</code> on a second loopback port (<code>:8101</code>) that the tunnel never forwards to</li>
+  <li><code>omlx-gate check --config gate.toml</code> &mdash; parse the config and print the effective route table</li>
+  <li><code>omlx-gate drift --config gate.toml</code> &mdash; read oMLX&rsquo;s <code>/openapi.json</code>, classify every route as allowed, denied, or <em>unclassified</em>, and exit 1 if any is unclassified. Run it after every <code>brew upgrade omlx</code>.</li>
+</ul>
+<pre><code><span class="cm"># docs/omlx/gate.toml — the whole public surface, in one reviewable file</span>
+listen   = "127.0.0.1:8100"
+ops      = "127.0.0.1:8101"
+upstream = "http://127.0.0.1:8000"
+
+[allow]   <span class="cm"># method + exact path; {x} matches one segment; everything else is 404</span>
+routes = [
+  "GET    /v1/models",
+  "POST   /v1/chat/completions",
+  "POST   /v1/completions",
+  "POST   /v1/responses",
+  "GET    /v1/responses/{id}",
+  "DELETE /v1/responses/{id}",
+  "POST   /v1/messages",
+  "POST   /v1/messages/count_tokens",
+  "POST   /v1/embeddings",
+  "POST   /v1/rerank",
+]
+
+[deny]    <span class="cm"># known upstream routes we chose not to publish; lets `drift` tell "decided" from "new"</span>
+prefixes = ["/admin", "/api", "/docs", "/redoc", "/openapi.json", "/health", "/cluster",
+            "/tokenize", "/detokenize", "/v1/tokenize", "/v1/detokenize",
+            "/v1/mcp", "/v1/web", "/v1/audio", "/v1/realtime",
+            "/v1/models/", "/v1/decisions", "/v1/systemone"]
+
+[limits]
+max_in_flight      = 4       <span class="cm"># oMLX's own cap is 8; half stays free for local use</span>
+max_body           = "32MB"
+wrong_key_budget   = 8       <span class="cm"># oMLX's numbers for non-loopback peers</span>
+first_lockout_s    = 30
+repeat_lockout_s   = 300
+client_key         = "CF-Connecting-IP"   <span class="cm"># IPv6 clients are bucketed by /64</span>
+
+[canary]
+interval_s = 15
+request    = "GET /v1/models"   <span class="cm"># sent with no key; any status but 401 closes the gate</span></code></pre>
+<p>The policy is one pure function, so the table of cases is the test:</p>
+<pre><code><span class="cm">// gate/src/policy.rs</span>
+pub enum Verdict {
+    Forward,                         <span class="cm">// stream both ways, count a 401 from upstream</span>
+    NotFound,                        <span class="cm">// not on the allowlist            -> 404</span>
+    NoCredential,                    <span class="cm">// no Bearer and no x-api-key      -> 401</span>
+    LockedOut { retry_after: u64 },  <span class="cm">// wrong-key budget spent          -> 429</span>
+    Busy { retry_after: u64 },       <span class="cm">// max_in_flight reached           -> 429</span>
+    OriginOpen,                      <span class="cm">// canary saw a keyless non-401    -> 503</span>
+    OriginDown,                      <span class="cm">// connect refused                 -> 503</span>
+}
+pub fn decide(req: &amp;RequestMeta, state: &amp;GateState, cfg: &amp;Config) -&gt; Verdict</code></pre>
+<p>
+  The access log is one JSON line per request to
+  <code>~/Library/Logs/omlx-tunnel/gate.log</code>: time, <code>cf-ray</code>, client
+  address and country, method, path, status, a key fingerprint (first 8 hex of its
+  SHA-256, never the key), bytes, time to first byte, duration. Never a body: prompts
+  are private.
+</p>
+<p class="small">
+  Not in the first version: <code>OPTIONS</code> (browser callers are not a target, and
+  a key in a web page is a leaked key) and WebSocket upgrades (the realtime routes
+  authenticate in-band, where the gate cannot count failures). Both are in
+  <a href="#p5">P5</a>.
+</p>
+
+<h3>Python &mdash; check, render, prove</h3>
+<pre><code>python3 scripts/preflight.py [origin|all]     <span class="cm"># read-only, one line per check, exit 1 on any failure</span>
+
+<span class="cm">#  origin   settings    api_key set; skip_api_key_verification and allow_unauthenticated_inference
+#                       false; host is loopback; port matches the justfile</span>
+<span class="cm">#  origin   behaviour   GET /v1/models with no key -> 401;  GET /health -> 200</span>
+<span class="cm">#  keys     strength    every sub key >= 32 characters and named (prints fingerprints, never keys)</span>
+<span class="cm">#  tunnel   binary      cloudflared on PATH; version printed</span>
+<span class="cm">#  tunnel   ingress     cloudflared tunnel --config ~/.cloudflared/omlx.yml ingress validate</span>
+<span class="cm">#  tunnel   routing     `ingress rule` for /v1/models -> gate; /admin, /docs, / -> http_status:404</span>
+<span class="cm">#  dns      record      omlx.xilia.net resolves to Cloudflare; the apex is unchanged</span>
+<span class="cm">#  launchd  agents      sh.brew.omlx, net.xilia.omlx-gate, net.xilia.omlx-tunnel loaded and running</span>
+<span class="cm">#  power    sleep       system sleep disabled (a warning, not a failure)</span>
+
+python3 scripts/render.py                     <span class="cm"># writes ~/.cloudflared/omlx.yml and the two plists (plistlib)</span>
+
+python3 scripts/smoke.py --base https://omlx.xilia.net [--slow]
+<span class="cm">#  key from OMLX_SMOKE_KEY (a sub key named "smoke"), never from argv</span>
+<span class="cm">#  1  no key                    -> 401, and a cf-ray header (it really went through the edge)</span>
+<span class="cm">#  2  /admin /docs /openapi.json /health /v1/mcp/tools /v1/models/x/load  -> 404</span>
+<span class="cm">#  3  wrong key x 9             -> eight 401s, then 429 with Retry-After</span>
+<span class="cm">#  4  GET /v1/models            -> 200, lists the models</span>
+<span class="cm">#  5  streamed chat completion  -> chunks arrive spread over time, not in one burst;</span>
+<span class="cm">#                                  prints time to first chunk and the longest gap</span>
+<span class="cm">#  6  POST /v1/messages with x-api-key -> 200 (the Anthropic-shaped route and header)</span>
+<span class="cm">#  --slow: a long-prompt stream (keep-alive chunks must carry it through prefill), and a</span>
+<span class="cm">#          long non-streaming request to record where this zone's idle limit actually is</span>
+
+python3 scripts/edge.py plan|apply            <span class="cm"># P4: host-scoped edge rules; plan is the default</span></code></pre>
+
+<h3>just &mdash; the front end</h3>
+<p>
+  Laid out like <code>atuin-host</code>: shared values in the root file, recipes in
+  <code>just/*.just</code>, hyphenated names, underscore-prefixed helpers,
+  <code>.env</code> for the two secrets. A sketch of the root:
+</p>
+<pre><code><span class="cm"># docs/omlx/justfile</span>
+set shell := ["bash", "-euo", "pipefail", "-c"]
+set dotenv-load := true
+
+HOME        := env_var("HOME")
+HOSTNAME    := "omlx.xilia.net"
+TUNNEL_NAME := "omlx"
+ORIGIN      := "http://127.0.0.1:8000"     <span class="cm"># oMLX, exactly as it runs today</span>
+GATE_ADDR   := "127.0.0.1:8100"            <span class="cm"># the only thing cloudflared forwards to</span>
+GATE_OPS    := "127.0.0.1:8101"
+CF_DIR      := HOME + "/.cloudflared"
+CF_CONFIG   := CF_DIR + "/omlx.yml"
+CF_METRICS  := "127.0.0.1:20241"
+<span class="cm"># D11: a certificate of its own, so a tunnel on another zone can share this Mac</span>
+export TUNNEL_ORIGIN_CERT := CF_DIR + "/xilia.net.pem"
+DOMAIN      := "gui/" + `id -u`
+
+import 'just/check.just'     <span class="cm"># preflight, smoke, smoke-slow, key-new</span>
+import 'just/gate.just'      <span class="cm"># gate-build, gate-test, gate-run, gate-drift</span>
+import 'just/tunnel.just'    <span class="cm"># tunnel-install/login/create/route/clean, ingress-check</span>
+import 'just/agents.just'    <span class="cm"># render, up, down, status, logs</span>
+import 'just/edge.just'      <span class="cm"># edge-plan, edge-apply</span>
+
+default:
+    @just --list --unsorted
+
+<span class="cm"># Gate first, then the tunnel: nothing is public until the gate's tests pass</span>
+setup: check-deps (preflight "origin") gate-test gate-build tunnel-login tunnel-create tunnel-route render ingress-check up smoke</code></pre>
+<pre><code><span class="cm"># docs/omlx/just/agents.just</span>
+
+<span class="cm"># Start the gate, wait for its canary, then the tunnel. Refuses while oMLX is open.</span>
+[group('run')]
+up: (preflight "origin") render
+    launchctl bootstrap {{DOMAIN}} ~/Library/LaunchAgents/net.xilia.omlx-gate.plist 2>/dev/null \
+      || launchctl kickstart -k {{DOMAIN}}/net.xilia.omlx-gate
+    curl -fsS --retry 20 --retry-connrefused --retry-delay 1 http://{{GATE_OPS}}/ready >/dev/null
+    launchctl bootstrap {{DOMAIN}} ~/Library/LaunchAgents/net.xilia.omlx-tunnel.plist 2>/dev/null \
+      || launchctl kickstart -k {{DOMAIN}}/net.xilia.omlx-tunnel
+    curl -fsS --retry 20 --retry-connrefused --retry-delay 1 http://{{CF_METRICS}}/ready >/dev/null
+    @echo "live: https://{{HOSTNAME}}/v1"
+
+<span class="cm"># Take the hostname offline (the edge answers 530). oMLX keeps serving locally.</span>
+[group('run')]
+down:
+    -launchctl bootout {{DOMAIN}}/net.xilia.omlx-tunnel
+    -launchctl bootout {{DOMAIN}}/net.xilia.omlx-gate</code></pre>
+<p>The rendered tunnel config is short, and ends with the catch-all cloudflared requires:</p>
+<pre><code><span class="cm"># ~/.cloudflared/omlx.yml — rendered by scripts/render.py, not edited by hand</span>
+tunnel: &lt;uuid&gt;
+credentials-file: /Users/steve/.cloudflared/&lt;uuid&gt;.json
+metrics: 127.0.0.1:20241
+ingress:
+  - hostname: omlx.xilia.net
+    path: ^/v1/                       <span class="cm"># coarse on purpose (D4); the gate has the exact list</span>
+    service: http://127.0.0.1:8100    <span class="cm"># the gate, never :8000</span>
+    originRequest:
+      connectTimeout: 5s
+  - service: http_status:404</code></pre>
+
+<!-- ======================================================= -->
+<h2 id="phases">Phases</h2>
+
+<div class="phase" id="p0">
+  <h4><span class="tag">P0</span> Posture and keys &mdash; no Cloudflare yet <span class="tag ok">partly done</span></h4>
+  <p class="status"><em>Done 20 Nov 2026: Tailscale Serve is live on tailnet port 8000
+  (<a href="#tailscale">the route taken</a>), with the <code>justfile</code> and the
+  origin checks. Two deviations from the sketch below: the script is
+  <code>scripts/check.py</code>, not <code>preflight.py</code>, and Serve is a TCP
+  forward of port 8000 carrying plain <code>http</code>, because the tailnet has no
+  HTTPS certificates enabled and the forward also answers by tailnet IP. Not done:
+  sub keys, the power decision.</em></p>
+  <ul>
+    <li><code>scripts/preflight.py</code>, origin checks only, and the <code>justfile</code> skeleton with <code>check-deps</code> and <code>preflight</code>.</li>
+    <li>Mint sub keys in the oMLX dashboard, on the Mac: one per remote client, plus one named <code>smoke</code>. <code>just key-new</code> prints a 43-character URL-safe random key to paste in. The main key is not handed to any remote client.</li>
+    <li>Private access for your own devices: Tailscale Serve puts oMLX, dashboard included, at the Mac&rsquo;s <code>ts.net</code> name for the tailnet only. This is also the remote-admin path for good (D8). The loopback caveats in <a href="#findings">the findings</a> apply here too, to an audience of your own five machines.</li>
+    <li>Decide the power settings (<a href="#open">open question</a>); <code>preflight</code> warns until system sleep is off.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> <code>just preflight origin</code> is green, and the <code>smoke</code> sub key lists models on <code>127.0.0.1:8000</code>.</p>
+</div>
+
+<div class="phase" id="p1">
+  <h4><span class="tag">P1</span> The gate &mdash; Rust, loopback only</h4>
+  <ul>
+    <li>The <code>omlx-gate</code> crate: config, <code>decide()</code>, the streaming proxy, the lockout table, the canary task, the access log, and the three subcommands.</li>
+    <li><code>gate.toml</code> as above, with every route in today&rsquo;s <code>/openapi.json</code> classified, so <code>gate-drift</code> starts green.</li>
+    <li><code>scripts/render.py</code> for the gate&rsquo;s plist; the agent <code>net.xilia.omlx-gate</code> with <code>RunAtLoad</code> and <code>KeepAlive</code>.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> <code>cargo test</code> is green; through <code>127.0.0.1:8100</code>, <code>/admin</code> is 404, a keyless call is 401, nine wrong keys from one faked <code>CF-Connecting-IP</code> end in 429, and a streamed completion shows the same chunk cadence as a direct call. And the drill: turn <code>skip_api_key_verification</code> on in the dashboard, watch the gate answer 503 within one canary interval, turn it off, watch it recover.</p>
+</div>
+
+<div class="phase" id="p2">
+  <h4><span class="tag">P2</span> The tunnel</h4>
+  <ul>
+    <li><code>just tunnel-install</code> (<code>brew install cloudflared</code>), <code>tunnel-login</code> (the browser step: choose <code>xilia.net</code>; the recipe then moves the certificate to its own name and refuses to run if an unknown <code>cert.pem</code> is already there), <code>tunnel-create</code>, <code>tunnel-route</code>.</li>
+    <li><code>tunnel-route</code> fails unless the record it created is exactly <code>omlx.xilia.net</code>. A certificate for the wrong zone produces a record under that zone instead, and that must be loud.</li>
+    <li><code>render</code> writes <code>omlx.yml</code> and the tunnel plist (<code>cloudflared tunnel --config &hellip;/omlx.yml --no-autoupdate run</code>; Homebrew owns upgrades). <code>ingress-check</code> runs <code>ingress validate</code> and the <code>ingress rule</code> table.</li>
+    <li><code>just up</code>, <code>down</code>, <code>status</code>, <code>logs</code>.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> <code>just status</code> shows the tunnel&rsquo;s edge connections, and from another network <code>curl -i https://omlx.xilia.net/v1/models</code> returns 401 with a <code>cf-ray</code> header, and <code>/admin</code> returns 404.</p>
+</div>
+
+<div class="phase" id="p3">
+  <h4><span class="tag">P3</span> Proof from outside, and the clients</h4>
+  <ul>
+    <li><code>scripts/smoke.py</code> and <code>just smoke</code>; then <code>just smoke-slow</code> once, and write the two measured numbers into this file: time to first chunk for a long prompt, and where the idle limit cut the non-streaming request.</li>
+    <li>Point the clients at it. Any OpenAI-compatible client: base URL <code>https://omlx.xilia.net/v1</code>, the client&rsquo;s own sub key as the API key. Anthropic-shaped clients: base URL <code>https://omlx.xilia.net</code>; oMLX accepts the key as a Bearer token or as <code>x-api-key</code>. <code>omlx launch</code> stays the local path.</li>
+    <li>A <code>README.md</code> runbook: up, down, status, logs, revoke a key, what each failure code means.</li>
+    <li>The reboot drill: restart, log in, do nothing, run <code>just status</code> and <code>just smoke</code>.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> <code>just smoke</code> is green from outside the LAN, one real client works end to end, and the reboot drill needed no hands after login.</p>
+</div>
+
+<div class="phase" id="p4">
+  <h4><span class="tag">P4</span> Edge rules <span class="tag acc">recommended</span></h4>
+  <p>
+    The gate already enforces everything; these two rules shed noise before it uses the
+    tunnel or wakes the Mac&rsquo;s logs.
+  </p>
+  <pre><code><span class="cm"># custom rule — Block</span>
+(http.host eq "omlx.xilia.net" and not starts_with(http.request.uri.path, "/v1/"))
+
+<span class="cm"># rate limiting rule — count by IP, 10 s period, block</span>
+(http.host eq "omlx.xilia.net")</code></pre>
+  <p>
+    <code>scripts/edge.py plan</code> first reads the zone&rsquo;s plan and its existing
+    rules and prints what it would add. The free plan has one rate-limiting rule for the
+    whole zone; if the site already uses it, this plan does not take it and the
+    gate&rsquo;s lockout stands alone. <code>apply</code> adds or updates only rules it
+    created, matched by a fixed <code>ref</code>, and never replaces a ruleset (D12).
+    Needs <code>CLOUDFLARE_API_TOKEN</code> in <code>.env</code>, scoped to WAF edit and
+    zone read on <code>xilia.net</code>. The same two rules can be clicked in the
+    dashboard instead.
+  </p>
+  <p class="done-when"><strong>Done when:</strong> <code>curl https://omlx.xilia.net/admin</code> is refused by Cloudflare (no gate log line), and the site at the apex behaves exactly as before.</p>
+</div>
+
+<div class="phase" id="p5">
+  <h4><span class="tag">P5</span> Later, only if something asks for it</h4>
+  <ul>
+    <li><strong>Cloudflare Access with a service token.</strong> A second credential, checked at the edge (<code>CF-Access-Client-Id</code> and <code>CF-Access-Client-Secret</code> headers, a Service Auth policy). Worth it only if every client can send two extra headers; many chat tools cannot.</li>
+    <li><strong>Audio and realtime.</strong> Needs WebSocket pass-through in the gate and a way to bound in-band auth failures.</li>
+    <li><strong>Usage and quotas per key.</strong> The gate log already has fingerprints, sizes and durations; a small <code>scripts/usage.py</code> would summarise it. Hard quotas would be a new <code>[limits]</code> table.</li>
+    <li><strong>An edge gateway.</strong> Cloudflare AI Gateway or a Rust Worker on the route, for caching, analytics or edge-side quotas. An addition in front of the gate, not a replacement for it.</li>
+  </ul>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="order">Order of work</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Step</th><th>Work</th><th>Blocked by</th><th>Size</th><th>Public surface after</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>P0 &mdash; preflight, sub keys, Tailscale Serve</td><td>&mdash;</td><td>small</td><td>none (tailnet only)</td></tr>
+    <tr><td>2</td><td>P1 &mdash; <code>omlx-gate</code> + its agent</td><td>1</td><td>medium</td><td>none</td></tr>
+    <tr><td>3</td><td>P2 &mdash; tunnel, DNS, agent, <code>up</code>/<code>down</code></td><td>2</td><td>small</td><td>allowlisted <code>/v1</code> routes</td></tr>
+    <tr><td>4</td><td>P3 &mdash; smoke, clients, runbook, reboot drill</td><td>3</td><td>small</td><td>same</td></tr>
+    <tr><td>5</td><td>P4 &mdash; edge rules</td><td>3</td><td>small</td><td>same, less noise</td></tr>
+    <tr><td>6</td><td>P5 &mdash; when asked</td><td>4</td><td>varies</td><td>depends</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="small">
+  Step 2 is most of the work and none of the exposure. Steps 3&ndash;4 are an afternoon
+  once it exists. <code>just down</code> at any point returns the Mac to step 2&rsquo;s
+  state; <code>just tunnel-clean</code> removes the tunnel and its DNS record.
+</p>
+
+<!-- ======================================================= -->
+<h2 id="testing">Testing</h2>
+<ul>
+  <li><code>cargo test</code> in <code>gate/</code> &mdash; the <code>decide()</code> table (every allowed route, every deny prefix, method mismatches, path tricks such as <code>/v1/../admin</code>, <code>//admin</code>, encoded slashes, a trailing slash), and an integration test against a fake origin that streams chunks with delays: the client must receive each chunk before the next is sent.</li>
+  <li><code>just gate-drift</code> &mdash; no unclassified upstream route. Also the first thing to run after <code>brew upgrade omlx</code>.</li>
+  <li><code>just preflight</code> &mdash; before every <code>up</code>, automatically.</li>
+  <li><code>just ingress-check</code> &mdash; <code>cloudflared tunnel ingress validate</code>, plus <code>ingress rule</code> for a fixed list of URLs and the rule each must match.</li>
+  <li><code>just smoke</code> from outside the LAN (a phone hotspot is enough); <code>just smoke-slow</code> once per oMLX or cloudflared upgrade.</li>
+  <li><strong>Drills, by hand:</strong> stop oMLX (<code>launchctl bootout</code>) and see 503 from the gate, not a hang; flip the skip setting and see the canary close the gate; <code>just down</code> and see 530 from the edge; reboot and log in.</li>
+</ul>
+
+<!-- ======================================================= -->
+<h2 id="files">Files</h2>
+<p class="small">Repo paths are relative to <code>docs/omlx/</code> in the <code>dev</code> repo.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>File</th><th>What</th><th>Phase</th></tr></thead>
+  <tbody>
+    <tr><td><code>justfile</code> <span class="tag ok">exists</span></td><td>today: <code>up</code>, <code>down</code>, <code>status</code>, <code>check</code>, <code>url</code> for the tailnet route. For the tunnel it gains the shared values, the imports, <code>check-deps</code> and <code>setup</code></td><td>P0</td></tr>
+    <tr><td><code>scripts/check.py</code> <span class="tag ok">exists</span></td><td>origin posture, serve config, Funnel off, the tailnet URL. For the tunnel it becomes the origin half of <code>preflight.py</code></td><td>P0</td></tr>
+    <tr><td><code>clients/claude-omlx.sh</code> <span class="tag ok">exists</span></td><td>the <code>claude-omlx</code> shell function: Claude Code against the tailnet URL (<a href="#agents">connecting an agent</a>)</td><td>P0</td></tr>
+    <tr><td><code>clients/opencode.json</code> <span class="tag ok">exists</span></td><td>opencode provider <code>omlx</code>, three models, key from <code>$OMLX_KEY</code></td><td>P0</td></tr>
+    <tr><td><code>.gitignore</code> <span class="tag ok">exists</span></td><td><code>__pycache__/</code>, <code>.env</code></td><td>P0</td></tr>
+    <tr><td><code>just/check.just</code> <span class="tag">new</span></td><td><code>preflight</code>, <code>key-new</code>, <code>smoke</code>, <code>smoke-slow</code></td><td>P0, P3</td></tr>
+    <tr><td><code>scripts/preflight.py</code> <span class="tag">new</span></td><td>posture checks, tunnel and DNS included</td><td>P0, P2</td></tr>
+    <tr><td><code>gate/</code> <span class="tag">new</span></td><td>crate <code>omlx-gate</code>: <code>Cargo.toml</code>, <code>src/{main,config,policy,proxy,lockout,canary,drift}.rs</code>, <code>tests/{policy,stream}.rs</code></td><td>P1</td></tr>
+    <tr><td><code>gate.toml</code> <span class="tag">new</span></td><td>the allowlist, deny list, limits, canary</td><td>P1</td></tr>
+    <tr><td><code>just/gate.just</code> <span class="tag">new</span></td><td><code>gate-build</code>, <code>gate-test</code>, <code>gate-run</code>, <code>gate-drift</code></td><td>P1</td></tr>
+    <tr><td><code>scripts/render.py</code> <span class="tag">new</span></td><td><code>omlx.yml</code> and the two plists</td><td>P1, P2</td></tr>
+    <tr><td><code>just/agents.just</code> <span class="tag">new</span></td><td><code>render</code>, <code>up</code>, <code>down</code>, <code>status</code>, <code>logs</code></td><td>P1, P2</td></tr>
+    <tr><td><code>just/tunnel.just</code> <span class="tag">new</span></td><td><code>tunnel-install</code>, <code>-login</code>, <code>-create</code>, <code>-route</code>, <code>-clean</code>, <code>_tunnel-id</code>, <code>ingress-check</code> &mdash; ported from <code>atuin-host</code></td><td>P2</td></tr>
+    <tr><td><code>scripts/smoke.py</code> <span class="tag">new</span></td><td>outside-in checks</td><td>P3</td></tr>
+    <tr><td><code>README.md</code> <span class="tag">new</span></td><td>runbook</td><td>P3</td></tr>
+    <tr><td><code>scripts/edge.py</code>, <code>just/edge.just</code> <span class="tag">new</span></td><td>host-scoped edge rules</td><td>P4</td></tr>
+    <tr><td><code>.env.example</code> <span class="tag">new</span></td><td><code>OMLX_SMOKE_KEY</code>, <code>CLOUDFLARE_API_TOKEN</code>; <code>.gitignore</code> gains <code>gate/target/</code></td><td>P0</td></tr>
+    <tr><td><code>cf-tunnel.html</code></td><td>this file: fill in each phase&rsquo;s result and the P3 numbers</td><td>all</td></tr>
+    <tr><td><code>~/.cloudflared/xilia.net.pem</code>, <code>&lt;uuid&gt;.json</code>, <code>omlx.yml</code> <span class="tag unk">not in the repo</span></td><td>login certificate, tunnel credentials, rendered config</td><td>P2</td></tr>
+    <tr><td><code>~/Library/LaunchAgents/net.xilia.omlx-gate.plist</code>, <code>&hellip;omlx-tunnel.plist</code> <span class="tag unk">not in the repo</span></td><td>rendered agents; logs in <code>~/Library/Logs/omlx-tunnel/</code></td><td>P1, P2</td></tr>
+    <tr><td><code>~/.omlx/settings.json</code> <span class="tag unk">not in the repo</span></td><td>sub keys added through the dashboard; nothing else changes</td><td>P0</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="alternatives">Alternatives</h2>
+<p>
+  Judged on five things: can it serve <code>omlx.xilia.net</code>; what becomes public;
+  who can read the prompts in transit; what it costs; what it leaves you to run.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Option</th><th><code>omlx.xilia.net</code>?</th><th>Reads plaintext in transit</th><th>Cost</th><th>Limits and upkeep</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Tailscale Serve</strong><br />tailnet only</td>
+      <td>No: the Mac&rsquo;s <code>ts.net</code> name</td>
+      <td>Nobody: WireGuard between your devices</td>
+      <td>$0; installed, five devices joined</td>
+      <td>Every client must be on the tailnet. No public surface at all. Nothing new to install or patch.</td>
+      <td><span class="tag ok">chosen &middot; live</span> decided 20 Nov 2026: every caller today is one of your own devices</td>
+    </tr>
+    <tr>
+      <td><strong>Cloudflare Tunnel</strong><br />the deferred plan above</td>
+      <td>Yes; the zone is already there</td>
+      <td>Cloudflare (TLS ends at its edge)</td>
+      <td>$0 for what is used here</td>
+      <td>Idle limit of roughly 100&ndash;120&nbsp;s between bytes; 100&nbsp;MB request bodies on the lower plans; one free rate-limiting rule per zone. Needs the Rust gate in front of oMLX.</td>
+      <td><span class="tag unk">deferred</span> the route to take when a caller cannot join the tailnet</td>
+    </tr>
+    <tr>
+      <td><strong>Tailscale Funnel</strong></td>
+      <td>No: Funnel only serves names under <code>ts.net</code></td>
+      <td>Nobody: TLS ends on the Mac</td>
+      <td>$0</td>
+      <td>Ports 443, 8443 and 10000 only; a bandwidth limit that is not published; no edge filtering or rate limiting.</td>
+      <td><span class="tag bad">rejected</span> fails the hostname requirement</td>
+    </tr>
+    <tr>
+      <td><strong>GCP: <code>e2-micro</code> VM + reverse tunnel + Caddy</strong><br />WireGuard, or rathole/frp, from the Mac to the VM</td>
+      <td>Yes: an unproxied A record to the VM</td>
+      <td>You, on the VM; or nobody, if the VM passes TLS through by SNI to Caddy on the Mac</td>
+      <td>Within the free tier: one <code>e2-micro</code> in us-west1, us-central1 or us-east1, 1&nbsp;GB of egress a month, then per-GB</td>
+      <td>No third-party idle limit. You run TLS, rate limiting, VM patching and take the internet&rsquo;s noise directly. The gate is needed here too.</td>
+      <td><span class="tag acc">fallback</span> the best non-Cloudflare option, and the one to take if Cloudflare reading prompts becomes unacceptable</td>
+    </tr>
+    <tr>
+      <td><strong>GCP: Cloud Run proxy + Tailscale</strong><br />a container that joins the tailnet in userspace and proxies to the Mac</td>
+      <td>Yes: domain mapping</td>
+      <td>Google and you</td>
+      <td>Per request and per CPU-second while a stream is open; egress</td>
+      <td>Request timeout up to 60&nbsp;minutes. Cold starts plus a tailnet join on each new instance; an auth key to rotate; more moving parts than the VM for the same result.</td>
+      <td><span class="tag bad">rejected</span></td>
+    </tr>
+    <tr>
+      <td><strong>GCP: external Application Load Balancer + hybrid NEG + VPN</strong><br />with IAP or Cloud Armor</td>
+      <td>Yes</td>
+      <td>Google</td>
+      <td>Load balancer and VPN are both billed by the hour</td>
+      <td>Needs a VPN endpoint with a public address at home. Enterprise tooling for one Mac.</td>
+      <td><span class="tag bad">rejected</span></td>
+    </tr>
+    <tr>
+      <td><strong>Run the model in the cloud</strong><br />a GPU VM, Cloud Run with a GPU, or Vertex AI</td>
+      <td>Yes</td>
+      <td>The cloud provider</td>
+      <td>Per GPU-hour</td>
+      <td>Not oMLX: MLX is Apple-silicon only, so this is a different runtime and different model builds. The Mac is already paid for.</td>
+      <td><span class="tag bad">out of scope</span> the requirement is the local server</td>
+    </tr>
+    <tr>
+      <td><strong>ngrok</strong></td>
+      <td>On a paid plan</td>
+      <td>ngrok</td>
+      <td>Subscription</td>
+      <td>Same shape as a Cloudflare Tunnel.</td>
+      <td><span class="tag bad">rejected</span> no advantage while the zone is on Cloudflare</td>
+    </tr>
+    <tr>
+      <td><strong>AWS</strong></td>
+      <td>Yes</td>
+      <td>As the matching GCP row</td>
+      <td>As the matching GCP row</td>
+      <td>No managed tunnel equivalent. A small EC2 or Lightsail instance with a reverse tunnel is the VM row with a different bill; API Gateway with a VPC link and a site-to-site VPN is the load-balancer row.</td>
+      <td><span class="tag bad">rejected</span> same verdicts</td>
+    </tr>
+    <tr>
+      <td><strong>Port-forward + dynamic DNS + Caddy on the Mac</strong></td>
+      <td>Yes</td>
+      <td>Nobody</td>
+      <td>$0</td>
+      <td>Publishes the home address, depends on the ISP not using carrier-grade NAT, and puts the Mac directly on the internet.</td>
+      <td><span class="tag bad">rejected</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Within Cloudflare</h3>
+<ul>
+  <li><strong>Dashboard-managed tunnel</strong> (a token instead of a config file). Works equally well; rejected only because the ingress rules would live in the dashboard rather than in this repo (D1).</li>
+  <li><strong>Quick tunnel</strong> (<code>trycloudflare.com</code>). A random hostname and no account; useful for a five-minute demo, not for <code>omlx.xilia.net</code>.</li>
+  <li><strong>Access in front of everything.</strong> Strong, but it needs clients that can send extra headers or follow a browser login. Kept as P5.</li>
+  <li><strong>A Rust Worker as the gate.</strong> Tempting, given the Worker tooling already on this machine. Rejected as the <em>only</em> gate because the check that matters &mdash; is the origin still demanding a key &mdash; has to be made from where the origin is. Possible later, in front of the local gate.</li>
+</ul>
+
+<h3>Sources for the outside facts</h3>
+<p class="small">
+  Read on 20 Nov 2026. Cloudflare&rsquo;s own pages have stated the idle limit as both
+  100 and 120 seconds, which is why P3 measures it instead of quoting it.
+</p>
+<ul class="small">
+  <li><a href="https://developers.cloudflare.com/tunnel/advanced/local-management/configuration-file/">Cloudflare Tunnel: configuration file and ingress rules</a></li>
+  <li><a href="https://developers.cloudflare.com/tunnel/advanced/local-management/as-a-service/macos/">Cloudflare Tunnel: run as a service on macOS</a></li>
+  <li><a href="https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-524">Cloudflare: error 524</a></li>
+  <li><a href="https://developers.cloudflare.com/waf/rate-limiting-rules/">Cloudflare WAF: rate limiting rules and per-plan limits</a></li>
+  <li><a href="https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/">Cloudflare Access: service tokens</a></li>
+  <li><a href="https://tailscale.com/docs/features/tailscale-funnel">Tailscale Funnel: requirements and limits</a></li>
+  <li><a href="https://cloud.google.com/free/docs/free-cloud-features">Google Cloud: free tier</a></li>
+  <li><a href="https://cloud.google.com/run/docs/configuring/request-timeout">Cloud Run: request timeout</a></li>
+</ul>
+
+<!-- ======================================================= -->
+<h2 id="risks">Risks and mitigations</h2>
+<p class="small">
+  For the deferred public hostname. The limits of the tailnet route are listed
+  <a href="#tailscale">in its own section</a>.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+  <tbody>
+    <tr><td>oMLX stops demanding a key: the skip setting is switched on, the key is removed, or an upgrade changes a default.</td><td>The canary closes the gate within 15&nbsp;s and keeps it closed (D7). <code>preflight</code> refuses <code>up</code>. Neither reads oMLX&rsquo;s intent; both test its behaviour.</td></tr>
+    <tr><td>An oMLX upgrade adds, renames or moves a route.</td><td>Default deny: a new route is private until someone adds it to <code>gate.toml</code>. <code>gate-drift</code> makes the new route visible; a renamed allowed route shows up as a 404 in <code>smoke</code>.</td></tr>
+    <tr><td>A sub key leaks.</td><td>One key per client (D5), so revocation is deleting one named row in the dashboard. The gate log shows which fingerprint was used, from where.</td></tr>
+    <tr><td>A valid key is used to saturate the GPU.</td><td><code>max_in_flight</code> in the gate, below oMLX&rsquo;s own cap, so local use keeps headroom. Per-key caps are a P5 item.</td></tr>
+    <tr><td>A long prompt or a non-streaming request hits the edge&rsquo;s idle limit (524).</td><td>Keep-alive chunks are already on; remote clients stream (D9). <code>smoke-slow</code> records the real limit on this zone, and the number goes in the runbook.</td></tr>
+    <tr><td>The Mac sleeps, loses power, or is logged out.</td><td>The power decision in the open questions; <code>preflight</code> warns. While down, the edge answers 530 quickly, so clients fail fast and can retry.</td></tr>
+    <tr><td>An edge rule changes the live site on the same zone.</td><td>Every expression carries the host clause; <code>edge.py</code> defaults to <code>plan</code>, touches only rules it created, and never replaces a ruleset (D12). P4&rsquo;s exit check includes the site.</td></tr>
+    <tr><td>The login certificate belongs to another zone and the DNS record lands there.</td><td>A certificate file of its own (D11); <code>tunnel-login</code> refuses an unknown <code>cert.pem</code>; <code>tunnel-route</code> checks the record&rsquo;s exact name.</td></tr>
+    <tr><td>Zone-level bot protection challenges API clients, which cannot solve a challenge.</td><td><code>smoke</code> runs from a plain HTTP client, so a challenge shows up as a failed check on day one. The fix is a host-scoped exception, handled in P4.</td></tr>
+    <tr><td>A bug in the gate: an outage, or a hole.</td><td>Small code with one pure policy function and a table test that includes path tricks. The outer <code>^/v1/</code> rules do not depend on it, so <code>/admin</code> stays unreachable even if the gate&rsquo;s list were wrong.</td></tr>
+    <tr><td>Cloudflare can read prompts and completions.</td><td>Accepted for this use, and stated in the runbook. If that changes, the VM row with TLS passed through to the Mac removes the reader.</td></tr>
+    <tr><td>Homebrew upgrades <code>cloudflared</code> or oMLX under a running agent.</td><td><code>KeepAlive</code> restarts them. <code>just status</code> prints both versions; the after-upgrade routine is <code>gate-drift</code>, then <code>smoke</code>.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="open">Open questions</h2>
+<ul>
+  <li><strong>Answered 20 Nov 2026: who calls this from outside the tailnet?</strong> Nobody yet, so the route is Tailscale Serve and the tunnel waits.</li>
+  <li><strong>Power.</strong> May the setup change <code>pmset</code> (system sleep off, restart after power failure on)? And after a reboot, is logging in by hand acceptable, or should the Mac log in automatically? Automatic login cannot be combined with FileVault. Recommendation: sleep off and auto-restart on; keep manual login. This matters for the tailnet route as much as for the tunnel.</li>
+  <li><strong><code>https</code> on the tailnet?</strong> It needs HTTPS certificates switched on for the tailnet in the Tailscale admin console, which is yours to do and puts the machine name <code>steves-mac-studio.tail059551.ts.net</code> in the public certificate-transparency logs for good. The traffic is already encrypted by WireGuard, so the gain is a URL without a port and clients or browser features that insist on <code>https</code>. Recommendation: stay on <code>http</code> until a client refuses it; the change is then one console switch and one edit to the <code>up</code> recipe.</li>
+  <li><strong>Where the tooling lives.</strong> It is here in <code>docs/omlx/</code> now. Its own repo beside <code>atuin-host</code> only makes sense if the tunnel and the gate get built.</li>
+  <li><strong>The main key.</strong> It is 20 characters. Once each device has its own sub key the main key never travels, so rotating it is optional.</li>
+  <li><strong>Deferred with the tunnel:</strong> the zone&rsquo;s plan and whether its single rate-limiting rule is free (<code>edge.py plan</code> answers it); and whether any remote client needs more than text inference &mdash; audio, realtime, MCP tools and web fetch are denied by default in <code>gate.toml</code>, and MCP tool execution deserves its own decision.</li>
+</ul>
+
+</main>
+
+<!-- ================= RIGHT: at a glance ================= -->
+<aside class="rail right" aria-label="At a glance">
+  <h2>At a glance</h2>
+
+  <div class="card">
+    <h3>Live now <span class="tag ok">Tailscale</span></h3>
+    <dl>
+      <dt>URL</dt><dd><code>http://steves-mac-studio:8000/v1</code></dd>
+      <dt>By IP</dt><dd><code>http://100.72.79.31:8000/v1</code></dd>
+      <dt>Reach</dt><dd>your tailnet only; Funnel off</dd>
+      <dt>Origin</dt><dd><code>127.0.0.1:8000</code>, oMLX 0.8.0, untouched</dd>
+      <dt>Run</dt><dd><code>just up</code>, <code>down</code>, <code>status</code>, <code>check</code>, <code>url</code></dd>
+      <dt>Undo</dt><dd><code>just down</code></dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Connect an agent</h3>
+    <dl>
+      <dt>Key</dt><dd><code>export OMLX_KEY=…</code> (a sub key per device)</dd>
+      <dt>Claude</dt><dd><code>source clients/claude-omlx.sh</code>, then <code>claude-omlx</code></dd>
+      <dt>opencode</dt><dd>copy <code>clients/opencode.json</code></dd>
+      <dt>Model</dt><dd><code>Qwen3.8-27B-oQ4e-mtp</code>, 262K context</dd>
+      <dt>URLs</dt><dd>no <code>/v1</code> for Claude Code; <code>/v1</code> for opencode</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Still yours to do</h3>
+    <ul>
+      <li>mint a sub key for the MacBook, then one per device</li>
+      <li>set the agents up on the MacBook (works by IP; its name lookup is open)</li>
+      <li>decide the power settings</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Deferred <span class="tag unk">Cloudflare</span></h3>
+    <dl>
+      <dt>URL</dt><dd><code>https://omlx.xilia.net/v1</code></dd>
+      <dt>Tunnel</dt><dd><code>omlx</code>, locally managed</dd>
+      <dt>Gate</dt><dd><code>127.0.0.1:8100</code> (Rust)</dd>
+      <dt>When</dt><dd>a caller that cannot join the tailnet</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Why a gate, then</h3>
+    <ul>
+      <li>loopback peers skip oMLX&rsquo;s wrong-key lockout</li>
+      <li>one setting removes auth on a loopback bind</li>
+      <li><code>/admin</code>, <code>/docs</code>, <code>/openapi.json</code> need no key</li>
+      <li><code>/v1/</code> also holds MCP, web fetch, model load</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Public surface, if built</h3>
+    <dl>
+      <dt>Open</dt><dd>models, chat, completions, responses, messages, embeddings, rerank</dd>
+      <dt>Closed</dt><dd>admin, docs, health, MCP, web, audio, realtime, model load</dd>
+      <dt>Rule</dt><dd>default deny, in <code>gate.toml</code></dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Tooling</h3>
+    <dl>
+      <dt>just</dt><dd>exists: <code>up</code>, <code>down</code>, <code>status</code>, <code>check</code>, <code>url</code></dd>
+      <dt>Python</dt><dd>exists: <code>scripts/check.py</code> (stdlib, 3.9). Deferred: render, smoke, edge</dd>
+      <dt>Clients</dt><dd>exists: <code>clients/claude-omlx.sh</code>, <code>clients/opencode.json</code></dd>
+      <dt>Rust</dt><dd>not involved now. Deferred: <code>omlx-gate</code></dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Phases of the deferred plan</h3>
+    <dl>
+      <dt>P0</dt><dd>posture, sub keys, Tailscale &mdash; partly done</dd>
+      <dt>P1</dt><dd>the gate, loopback only</dd>
+      <dt>P2</dt><dd>tunnel + DNS + agents</dd>
+      <dt>P3</dt><dd>smoke from outside, clients</dd>
+      <dt>P4</dt><dd>edge rules (recommended)</dd>
+      <dt>P5</dt><dd>Access, audio, quotas (later)</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Alternatives, in a line each</h3>
+    <ul>
+      <li><strong>Tailscale Serve:</strong> chosen, live</li>
+      <li><strong>Cloudflare Tunnel:</strong> deferred, planned in full</li>
+      <li><strong>Tailscale Funnel:</strong> no custom hostname</li>
+      <li><strong>GCP VM + reverse tunnel:</strong> the non-Cloudflare fallback</li>
+      <li><strong>Cloud Run, load balancer, ngrok, AWS, port-forward:</strong> rejected</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Diagram legend</h3>
+    <div class="legend">
+      <span><i class="swatch" style="background: var(--req)"></i>request / setup step</span>
+      <span><i class="swatch" style="background: var(--res)"></i>response / readiness</span>
+      <span><i class="swatch" style="background: var(--bad)"></i>refused, or a missing piece</span>
+      <span><i class="swatch" style="background: var(--unk)"></i>oMLX, canary, keep-alive</span>
+      <span><i class="swatch" style="background: var(--ok)"></i>the gate</span>
+    </div>
+  </div>
+</aside>
+
+</div>
+
+<script>
+  (() => {
+    const links = new Map(
+      [...document.querySelectorAll('.left nav a[href^="#"]')].map((a) => [a.getAttribute("href").slice(1), a]),
+    );
+    const targets = [...links.keys()].map((id) => document.getElementById(id)).filter(Boolean);
+    let current = null;
+    const mark = (id) => {
+      if (id === current) return;
+      current = id;
+      links.forEach((a, key) => a.setAttribute("aria-current", String(key === id)));
+    };
+    const spy = () => {
+      const line = window.innerHeight * 0.25;
+      let active = targets[0];
+      for (const t of targets) if (t.getBoundingClientRect().top <= line) active = t;
+      if (active) mark(active.id);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      document.getElementById("progress").style.transform = `scaleX(${max > 0 ? window.scrollY / max : 0})`;
+    };
+    addEventListener("scroll", spy, { passive: true });
+    addEventListener("resize", spy);
+    spy();
+
+    const btn = document.getElementById("anim-toggle");
+    const svgs = [...document.querySelectorAll("svg.anim")];
+    const setPaused = (paused) => {
+      document.body.classList.toggle("paused", paused);
+      svgs.forEach((s) => (paused ? s.pauseAnimations() : s.unpauseAnimations()));
+      btn.setAttribute("aria-pressed", String(paused));
+      btn.textContent = paused ? "Play diagrams" : "Pause diagrams";
+    };
+    btn.addEventListener("click", () => setPaused(btn.getAttribute("aria-pressed") !== "true"));
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) setPaused(true);
+  })();
+</script>
+</body>
+</html>
