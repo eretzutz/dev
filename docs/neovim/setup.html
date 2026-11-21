@@ -345,7 +345,7 @@ td.nw{white-space:nowrap;font-weight:600}
   </a>
   <div class="top-prog" title="Steps completed">
     <div class="top-track"><div class="top-fill" id="top-fill"></div></div>
-    <span class="top-count" id="top-count">0 / 27</span>
+    <span class="top-count" id="top-count">0 / 30</span>
   </div>
   <button class="ibtn" id="btn-motion" aria-pressed="true" title="Turn diagram motion on or off">
     <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><path d="M3 1.8v10.4a.6.6 0 0 0 .9.5l8.3-5.2a.6.6 0 0 0 0-1L3.9 1.3a.6.6 0 0 0-.9.5z"/></svg>
@@ -406,10 +406,10 @@ td.nw{white-space:nowrap;font-weight:600}
   <div class="chips">
     <span class="chip"><b>Target</b>Neovim 0.12.6 + LazyVim 16</span>
     <span class="chip"><b>Machine</b>macOS · Ghostty · zsh</span>
-    <span class="chip"><b>Scope</b>9 phases · 27 steps</span>
+    <span class="chip"><b>Scope</b>9 phases · 30 steps</span>
     <span class="chip"><b>Audited</b>20 Nov 2026</span>
   </div>
-  <div class="callout gate" style="margin:22px 0 0"><span class="cl">Status</span><div><p><strong>Set up on 20 Nov 2026.</strong> Every phase has been run on this machine. Plain <code>nvim</code> now starts the new config, and the old one is intact as <code>nvim-legacy</code>. The panels, language servers, format-on-save and git signs were checked in a live session against a sample project. Four steps are left unticked because they need you at the keyboard in a real project: drilling the panel keys, proving the language servers on your own code, walking a git change through, and your own acceptance pass. The whole setup can be rebuilt or re-checked with <code>just</code>: see <a href="#auto">Automation</a>.</p></div></div>
+  <div class="callout gate" style="margin:22px 0 0"><span class="cl">Status</span><div><p><strong>Set up on 20 Nov 2026.</strong> Every phase has been run on this machine. Plain <code>nvim</code> now starts the new config, and the old one is intact as <code>nvim-legacy</code>. The panels, language servers, auto-save, format-on-save and git signs were checked in a live session against a sample project. Four steps are left unticked because they need you at the keyboard in a real project: drilling the panel keys, proving the language servers on your own code, walking a git change through, and your own acceptance pass. The whole setup can be rebuilt or re-checked with <code>just</code>: see <a href="#auto">Automation</a>.</p></div></div>
 </header>
 
 <!-- ───────── TARGET ───────── -->
@@ -461,7 +461,7 @@ td.nw{white-space:nowrap;font-weight:600}
   <div class="tblwrap"><table>
     <thead><tr><th>Requirement</th><th>Met by</th><th>Toggle</th></tr></thead>
     <tbody>
-      <tr><td class="nw">Side panel: files &amp; folders</td><td>neo-tree <code>filesystem</code> source, pinned to the left edge</td><td class="k"><kbd>&lt;leader&gt;e</kbd></td></tr>
+      <tr><td class="nw">Side panel: files &amp; folders</td><td>neo-tree <code>filesystem</code> source, pinned to the left edge and open from the moment Neovim starts. <em>Browse Folders</em> on the start screen puts the cursor in it.</td><td class="k"><kbd>&lt;leader&gt;e</kbd></td></tr>
       <tr><td class="nw">Side panel: git</td><td>neo-tree <code>git_status</code> source in the same sidebar; hunks in the sign column; lazygit as a float</td><td class="k"><kbd>&lt;leader&gt;ge</kbd> <kbd>&lt;leader&gt;gg</kbd></td></tr>
       <tr><td class="nw">Side panel: “etc”</td><td>Open buffers (left), symbol outline (right), search &amp; replace (right), test summary (left)</td><td class="k"><kbd>&lt;leader&gt;be</kbd> <kbd>&lt;leader&gt;cs</kbd></td></tr>
       <tr><td class="nw">Bottom panel: shell</td><td>Snacks terminal as a bottom split; a count gives you a second one</td><td class="k"><kbd>&lt;C-/&gt;</kbd> <kbd>2&lt;C-/&gt;</kbd></td></tr>
@@ -715,11 +715,53 @@ git init &amp;&amp; git add -A &amp;&amp; git commit -m "LazyVim starter"</code>
       </div>
     </div>
     <div class="step" id="s-p3-2">
-      <label class="step-h"><input type="checkbox" data-step="p3.2"><span class="step-t">Tune sizes in <code>lua/plugins/panels.lua</code><small>The stock terminal takes 40% of the screen, and the SQL extra’s database panel opens with every toggle-all.</small></span></label>
+      <label class="step-h"><input type="checkbox" data-step="p3.2"><span class="step-t">Show the tree at startup and tune sizes, in <code>lua/plugins/panels.lua</code><small>Stock LazyVim hides the tree until you ask, gives the terminal 40% of the screen, and opens the SQL extra’s database panel with every toggle-all.</small></span></label>
       <div class="step-b">
-        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/panels.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">return {
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/panels.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">-- IDE-style layout: the file tree is on screen from the start, panels have sensible sizes.
+-- The docking rules themselves come from LazyVim's ui.edgy, editor.neo-tree and editor.outline extras.
+
+--- Should the file tree be shown at startup without being asked for?
+local function wants_tree()
+  if vim.o.columns &lt; 100 or vim.o.diff then
+    return false -- no room, or a diff view
+  end
+  local ft = vim.bo.filetype
+  if ft == "gitcommit" or ft == "gitrebase" or ft == "man" then
+    return false
+  end
+  local arg = vim.fn.argv(0)
+  if arg == "" then
+    return true -- plain `nvim`: the start screen
+  end
+  if vim.fn.isdirectory(arg) == 1 then
+    return false -- `nvim some/dir`: LazyVim opens the tree itself
+  end
+  -- A file outside the current directory is a one-off edit, usually started by another
+  -- tool through $EDITOR (kubectl edit, crontab -e, ...). No project to browse there.
+  local path = vim.fs.normalize(vim.fn.fnamemodify(arg, ":p"))
+  return vim.startswith(path, vim.fs.normalize(vim.fn.getcwd()) .. "/")
+end
+
+return {
   {
     "folke/edgy.nvim",
+    -- `init` runs at startup for every plugin, before any of them load.
+    -- (Deliberately not on the neo-tree spec: LazyVim defines an `init` there and this would replace it.)
+    init = function()
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "VeryLazy",
+        once = true,
+        callback = function()
+          if not wants_tree() then
+            return
+          end
+          vim.schedule(function() -- after edgy itself has loaded, so the window gets docked
+            -- "show" opens the tree without moving the cursor out of the editor or start screen
+            require("neo-tree.command").execute({ action = "show", dir = LazyVim.root() })
+          end)
+        end,
+      })
+    end,
     opts = function(_, opts)
       opts.options = {
         left = { size = 34 },
@@ -744,13 +786,53 @@ git init &amp;&amp; git add -A &amp;&amp; git commit -m "LazyVim starter"</code>
   },
   {
     "nvim-neo-tree/neo-tree.nvim",
+    -- LazyVim's own &lt;leader&gt;ge and &lt;leader&gt;be open their list in the file tree's slot, which
+    -- closes the tree. Give each the slot ui.edgy uses for its pinned section instead, so the
+    -- key toggles that section and the tree stays. The git list opens on the repository in
+    -- focus (lua/gitfocus.lua).
+    keys = {
+      {
+        "&lt;leader&gt;ge",
+        function()
+          require("neo-tree.command").execute({
+            source = "git_status",
+            toggle = true,
+            position = "right",
+            dir = require("gitfocus").repo(),
+          })
+        end,
+        desc = "Git Explorer",
+      },
+      {
+        "&lt;leader&gt;be",
+        function()
+          require("neo-tree.command").execute({ source = "buffers", toggle = true, position = "top" })
+        end,
+        desc = "Buffer Explorer",
+      },
+    },
     opts = {
       filesystem = {
         filtered_items = { hide_dotfiles = false, hide_gitignored = true },
       },
     },
   },
+  {
+    -- Put the file tree on the start screen's menu, where it was missing.
+    "folke/snacks.nvim",
+    opts = function(_, opts)
+      table.insert(opts.dashboard.preset.keys, 1, {
+        icon = "\u{f07c} ",
+        key = "e",
+        desc = "Browse Folders",
+        action = function()
+          require("neo-tree.command").execute({ action = "focus", dir = LazyVim.root() })
+        end,
+      })
+    end,
+  },
 }</code></pre></figure>
+        <p>Out of the box, LazyVim shows no sidebar and its start screen has no entry for one: the tree exists but only appears after <kbd>&lt;leader&gt;e</kbd>. This file makes it visible from the start and adds <em>Browse Folders</em> to the menu.</p>
       </div>
     </div>
     <div class="step" id="s-p3-3">
@@ -762,8 +844,8 @@ git init &amp;&amp; git add -A &amp;&amp; git commit -m "LazyVim starter"</code>
   <div class="tblwrap"><table>
     <thead><tr><th>Key</th><th>Does</th></tr></thead>
     <tbody>
-      <tr><td class="k"><kbd>&lt;leader&gt;e</kbd> / <kbd>&lt;leader&gt;E</kbd></td><td>File tree at the project root / at the current directory</td></tr>
-      <tr><td class="k"><kbd>&lt;leader&gt;be</kbd> · <kbd>&lt;leader&gt;ge</kbd></td><td>Buffers section · Git status section</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;e</kbd> / <kbd>&lt;leader&gt;E</kbd></td><td>Hide or show the file tree, at the project root / at the current directory. It is already open when Neovim starts in a project.</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;be</kbd> · <kbd>&lt;leader&gt;ge</kbd></td><td>Buffers section · Git status section. Each key shows or hides its own section; the file tree stays where it is.</td></tr>
       <tr><td class="k"><kbd>l</kbd> <kbd>h</kbd> · <kbd>a</kbd> <kbd>d</kbd> <kbd>r</kbd> <kbd>m</kbd></td><td>In the tree: open, collapse · add, delete, rename, move. <kbd>P</kbd> previews, <kbd>?</kbd> lists the rest.</td></tr>
       <tr><td class="k"><kbd>&lt;</kbd> <kbd>&gt;</kbd></td><td>In the tree: previous / next source</td></tr>
       <tr><td class="k"><kbd>&lt;leader&gt;cs</kbd></td><td>Symbol outline on the right</td></tr>
@@ -793,7 +875,7 @@ git init &amp;&amp; git add -A &amp;&amp; git commit -m "LazyVim starter"</code>
     <div class="fig-scroll"><svg class="dia" id="dia-edit" viewBox="0 0 960 392" style="min-width:760px" role="img" aria-label="Editing dataflow. As you type, the buffer feeds Tree-sitter, which produces highlighting, folds and text objects, and the LSP client, which exchanges requests with the language server and returns diagnostics and completion items. On save, conform formats the buffer before it is written; afterwards nvim-lint and gitsigns run against the file on disk.">
       <defs><marker id="arr-dia-edit" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8z" class="d-arrow"/></marker></defs>
     </svg></div>
-    <figcaption class="fig-cap">Typing and saving take different paths. Parsing and LSP requests run as you type; formatting runs just before the write, linting and git diffing just after. Their output lands in places the panel layout already gives you: the sign column, the bottom diagnostics list, the git sidebar.</figcaption>
+    <figcaption class="fig-cap">Typing and saving take different paths. Parsing and LSP requests run as you type; formatting runs just before the write, linting and git diffing just after. An automatic save (<a href="#s-p7-4">Phase 7</a>) takes the same path but skips the formatting step. Their output lands in places the panel layout already gives you: the sign column, the bottom diagnostics list, the git sidebar.</figcaption>
   </figure>
 
   <h3 id="p4-steps">Steps</h3>
@@ -861,23 +943,97 @@ git init &amp;&amp; git add -A &amp;&amp; git commit -m "LazyVim starter"</code>
       <tr><td class="k"><kbd>&lt;leader&gt;ghp</kbd> · <kbd>&lt;leader&gt;ghs</kbd> · <kbd>&lt;leader&gt;ghr</kbd></td><td>Preview · stage · reset the hunk under the cursor</td></tr>
       <tr><td class="k"><kbd>&lt;leader&gt;ghb</kbd></td><td>Blame the current line</td></tr>
       <tr><td class="k"><kbd>&lt;leader&gt;gg</kbd></td><td>lazygit in a float (0.62 is installed)</td></tr>
-      <tr><td class="k"><kbd>&lt;leader&gt;gs</kbd> · <kbd>&lt;leader&gt;gd</kbd> · <kbd>&lt;leader&gt;gl</kbd></td><td>Pickers: status · diff hunks · log</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;gs</kbd> · <kbd>&lt;leader&gt;gd</kbd> · <kbd>&lt;leader&gt;gl</kbd></td><td>Pickers: status · diff hunks · log, for the repository in focus</td></tr>
       <tr><td class="k"><kbd>&lt;leader&gt;gp</kbd> · <kbd>&lt;leader&gt;gi</kbd></td><td>GitHub pull requests · issues, through <code>gh</code></td></tr>
-      <tr><td class="k"><kbd>&lt;leader&gt;ge</kbd></td><td>Git status section in the left sidebar</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;ge</kbd></td><td>Git status section in the left sidebar, beside the file tree. It shows the repository in focus, names it on its first line, and lists its stage, commit and push keys under that.</td></tr>
     </tbody>
   </table></div>
   <h3 id="p5-steps">Steps</h3>
   <div class="steps">
     <div class="step" id="s-p5-1">
-      <label class="step-h"><input type="checkbox" data-step="p5.1"><span class="step-t">Carry over neogit and diffview<small>Lazy-loaded on their commands, on three keys LazyVim leaves free.</small></span></label>
+      <label class="step-h"><input type="checkbox" data-step="p5.1"><span class="step-t">Carry over neogit and diffview<small>Lazy-loaded on their commands, on three keys LazyVim leaves free. The top half of the file belongs to the next two steps.</small></span></label>
       <div class="step-b">
-        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/git.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">return {
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/git.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">-- Git views follow the repository in focus (see lua/gitfocus.lua), plus neogit and diffview,
+-- carried over from the pre-LazyVim config. gitsigns, lazygit and the git pickers are built in.
+
+--- A Snacks git picker, run in the repository in focus instead of the working directory.
+local function picker(name, opts)
+  return function()
+    Snacks.picker[name](vim.tbl_extend("force", { cwd = require("gitfocus").repo() }, opts or {}))
+  end
+end
+
+return {
+  {
+    -- The git panel: re-pointed whenever focus moves to another repository (lua/gitfocus.lua
+    -- does that), and right after it opens, because it opens on the working directory.
+    "nvim-neo-tree/neo-tree.nvim",
+    opts = function(_, opts)
+      -- The panel now changes repository by itself, so its first line has to say which one
+      -- it shows. The stock "GIT STATUS for ~/long/path/to/repo" is cut off before the name.
+      opts.git_status = opts.git_status or {}
+      opts.git_status.components = opts.git_status.components or {}
+      opts.git_status.components.name = function(config, node, state)
+        if node.type ~= "directory" or node:get_depth() ~= 1 then
+          return require("neo-tree.sources.git_status.components").name(config, node, state)
+        end
+        local note
+        if not vim.uv.fs_stat(node.path .. "/.git") then
+          note = "not a git repository"
+        elseif not node:has_children() then
+          note = "no changes"
+        else
+          note = vim.fn.fnamemodify(vim.fs.dirname(node.path), ":~")
+        end
+        return {
+          { text = vim.fs.basename(node.path), highlight = "NeoTreeRootName" },
+          { text = "  " .. note, highlight = "NeoTreeDimText" },
+        }
+      end
+
+      -- Stage, commit, push: replace neo-tree's actions, which run git in the working
+      -- directory, with ones that act on the repository the section shows (lua/gitpanel.lua).
+      -- The keys stay neo-tree's: ga gu gt A gc gp gg gl gr gU.
+      local gitpanel = require("gitpanel")
+      opts.git_status.commands = vim.tbl_extend("force", opts.git_status.commands or {}, gitpanel.commands)
+
+      opts.event_handlers = opts.event_handlers or {}
+      table.insert(opts.event_handlers, {
+        event = "after_render", -- the section was redrawn: put the key hints back under its heading
+        handler = gitpanel.hints,
+      })
+      table.insert(opts.event_handlers, {
+        event = "neo_tree_window_after_open",
+        handler = function(args)
+          if args.source == "git_status" then
+            vim.schedule(require("gitfocus").sync)
+          end
+        end,
+      })
+    end,
+  },
+  {
+    -- Same keys and names as LazyVim; only the repository they look at changes.
+    "folke/snacks.nvim",
+    keys = {
+      { "&lt;leader&gt;gs", picker("git_status"), desc = "Git Status" },
+      { "&lt;leader&gt;gd", picker("git_diff"), desc = "Git Diff (hunks)" },
+      { "&lt;leader&gt;gD", picker("git_diff", { base = "origin", group = true }), desc = "Git Diff (origin)" },
+      { "&lt;leader&gt;gS", picker("git_stash"), desc = "Git Stash" },
+    },
+  },
   {
     "NeogitOrg/neogit",
     cmd = "Neogit",
     dependencies = { "nvim-lua/plenary.nvim", "sindrets/diffview.nvim" },
     keys = {
-      { "&lt;leader&gt;gn", "&lt;cmd&gt;Neogit&lt;cr&gt;", desc = "Neogit" },
+      {
+        "&lt;leader&gt;gn",
+        function()
+          require("neogit").open({ cwd = require("gitfocus").repo() })
+        end,
+        desc = "Neogit",
+      },
     },
     opts = {},
   },
@@ -885,7 +1041,14 @@ git init &amp;&amp; git add -A &amp;&amp; git commit -m "LazyVim starter"</code>
     "sindrets/diffview.nvim",
     cmd = { "DiffviewOpen", "DiffviewFileHistory" },
     keys = {
-      { "&lt;leader&gt;gv", "&lt;cmd&gt;DiffviewOpen&lt;cr&gt;", desc = "Diffview (working tree)" },
+      {
+        "&lt;leader&gt;gv",
+        function()
+          local repo = require("gitfocus").repo()
+          vim.cmd("DiffviewOpen" .. (repo and " -C" .. vim.fn.fnameescape(repo) or ""))
+        end,
+        desc = "Diffview (working tree)",
+      },
       { "&lt;leader&gt;gV", "&lt;cmd&gt;DiffviewFileHistory %&lt;cr&gt;", desc = "Diffview (file history)" },
     },
   },
@@ -893,11 +1056,464 @@ git init &amp;&amp; git add -A &amp;&amp; git commit -m "LazyVim starter"</code>
         <p>diffview.nvim has had no commits since August 2024. It still works, but treat it as the first suspect if a diff view misbehaves on 0.12.</p>
       </div>
     </div>
+    <div class="step" id="s-p5-3">
+      <label class="step-h"><input type="checkbox" data-step="p5.3"><span class="step-t">Git views follow the repository in focus<small>The file you are editing, or the entry under the cursor in the file tree, decides which repository they show.</small></span></label>
+      <div class="step-b">
+        <p>Out of the box, the git panel and the git pickers look at the directory Neovim was started in. In a folder that holds several repositories and is not one itself, the panel then reports a clean tree and <kbd>&lt;leader&gt;gs</kbd> fails. One small module works out which repository has focus, and the git views ask it.</p>
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/gitfocus.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">-- The repository "in focus": the one that holds the file being edited, or the entry under the
+-- cursor in the file tree. Git views follow it, instead of the directory Neovim was started
+-- in. That matters when that directory holds several repositories, or is not one itself.
+local M = {}
+
+---@type string? the last repository that had focus; kept while focus is on a terminal, a panel, ...
+local last
+
+--- Root of the repository that contains `path`, or nil.
+---@param path string?
+function M.root_of(path)
+  if not path or path:sub(1, 1) ~= "/" then
+    return nil
+  end
+  return vim.fs.root(path, ".git")
+end
+
+--- The file or directory that has focus in the current window, or nil for anything else.
+local function focused_path()
+  local buf = vim.api.nvim_get_current_buf()
+  local ft = vim.bo[buf].filetype
+  if ft == "neo-tree" then
+    local source = vim.b[buf].neo_tree_source
+    if source ~= "filesystem" and source ~= "buffers" then
+      return nil -- the git panel itself must not steer what it shows
+    end
+    local ok, node = pcall(function()
+      return require("neo-tree.sources.manager").get_state_for_window().tree:get_node()
+    end)
+    return ok and node and node.path or nil
+  elseif ft == "oil" then
+    local ok, dir = pcall(function()
+      return require("oil").get_current_dir(buf)
+    end)
+    return ok and dir or nil
+  elseif vim.bo[buf].buftype == "" then
+    return vim.api.nvim_buf_get_name(buf)
+  end
+end
+
+--- The repository in focus. Falls back to the last one that had focus, then to the one
+--- the working directory is in. nil if none of those is a repository.
+---@return string?
+function M.repo()
+  last = M.root_of(focused_path()) or last
+  return last or M.root_of(vim.fn.getcwd())
+end
+
+local function same(a, b)
+  return a == b or (a ~= nil and b ~= nil and vim.uv.fs_realpath(a) == vim.uv.fs_realpath(b))
+end
+
+--- Point the git panel at the repository in focus, if the panel is on screen.
+function M.sync()
+  local repo = M.repo()
+  if not repo or not package.loaded["neo-tree"] then
+    return
+  end
+  local ok, err = pcall(function()
+    local manager = require("neo-tree.sources.manager")
+    local state = manager.get_state("git_status")
+    if not same(state.path, repo) and require("neo-tree.ui.renderer").window_exists(state) then
+      manager.navigate(state, repo)
+    end
+  end)
+  if not ok then
+    vim.notify_once("gitfocus: " .. tostring(err), vim.log.levels.WARN)
+  end
+end
+
+function M.setup()
+  local group = vim.api.nvim_create_augroup("gitfocus", { clear = true })
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    desc = "Git panel follows the file in focus",
+    callback = function()
+      vim.schedule(M.sync)
+    end,
+  })
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = group,
+    desc = "Git panel follows the entry under the cursor in the file tree",
+    callback = function()
+      if vim.bo.filetype == "neo-tree" then
+        vim.schedule(M.sync)
+      end
+    end,
+  })
+end
+
+return M</code></pre></figure>
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/config/autocmds.lua (add at the end)</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">-- Git views follow the repository of the file or tree entry in focus
+require("gitfocus").setup()</code></pre></figure>
+        <div class="tblwrap"><table>
+          <thead><tr><th>View</th><th>What changes</th></tr></thead>
+          <tbody>
+            <tr><td>Git status section, <kbd>&lt;leader&gt;ge</kbd></td><td>Switches repository as focus moves. Its first line names the repository, or says <em>no changes</em> or <em>not a git repository</em>.</td></tr>
+            <tr><td class="k"><kbd>&lt;leader&gt;gs</kbd> · <kbd>&lt;leader&gt;gd</kbd> · <kbd>&lt;leader&gt;gD</kbd> · <kbd>&lt;leader&gt;gS</kbd></td><td>The status, diff and stash pickers open on that repository.</td></tr>
+            <tr><td class="k"><kbd>&lt;leader&gt;gn</kbd> · <kbd>&lt;leader&gt;gv</kbd></td><td>Neogit and Diffview open on that repository.</td></tr>
+            <tr><td>Change signs, <kbd>&lt;leader&gt;gg</kbd>, <kbd>&lt;leader&gt;gl</kbd></td><td>Unchanged: gitsigns, lazygit and the log picker already used the current file’s repository.</td></tr>
+          </tbody>
+        </table></div>
+        <p>Focus on something that belongs to no repository, such as a terminal or a loose file, leaves the last repository showing. The wiring for the panel and the keys is in <code>git.lua</code> above and in <code>panels.lua</code> in <a href="#s-p3-2">Phase 3</a>.</p>
+      </div>
+    </div>
+    <div class="step" id="s-p5-4">
+      <label class="step-h"><input type="checkbox" data-step="p5.4"><span class="step-t">Commit and push from the git section<small>The section lists its keys. <kbd>gc</kbd> opens a box for the commit message, <kbd>gp</kbd> pushes.</small></span></label>
+      <div class="step-b">
+        <p>The git section already had stage, commit and push keys, but nothing on screen said so, and they ran git in the directory Neovim was started in. With the section following the repository in focus, that could commit or push a different repository from the one on screen. This replaces them with versions that act on the repository shown, run in the background, and report what git said.</p>
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/gitpanel.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">-- Stage, commit, push and the other actions of the git section in the sidebar, plus the
+-- line of key hints shown under its heading.
+--
+-- neo-tree ships these actions, but its versions run git in Neovim's working directory.
+-- The section follows the repository in focus (lua/gitfocus.lua), so the stock ones could
+-- commit or push a different repository from the one on screen. These act on the repository
+-- the section shows, and run in the background so a slow push does not freeze the editor.
+local M = {}
+
+local INFO, WARN, ERROR = vim.log.levels.INFO, vim.log.levels.WARN, vim.log.levels.ERROR
+
+local function name(root)
+  return vim.fs.basename(root)
+end
+
+local function notify(root, msg, level)
+  vim.notify(msg, level or INFO, { title = "Git · " .. name(root) })
+end
+
+--- Run git in `root` in the background; `done(ok, output, result)` runs on the main loop.
+local function git(root, args, done)
+  vim.system(vim.list_extend({ "git", "-C", root }, args), {
+    text = true,
+    -- No terminal attached: if git or ssh wants a password it fails with a message,
+    -- instead of asking for it on top of the editor. Same for anything that would open $EDITOR.
+    detach = true,
+    env = { GIT_TERMINAL_PROMPT = "0", GIT_EDITOR = "true" },
+  }, vim.schedule_wrap(function(res)
+    done(res.code == 0, vim.trim((res.stdout or "") .. "\n" .. (res.stderr or "")), res)
+  end))
+end
+
+--- Tell neo-tree the repository changed, so the section and the file tree redraw.
+local function refresh()
+  local events = require("neo-tree.events")
+  events.fire_event(events.GIT_EVENT)
+end
+
+--- The repository the section shows, or nil (with a message) if it shows none.
+local function repo(state)
+  local root = state.path
+  if root and vim.uv.fs_stat(root .. "/.git") then
+    return root
+  end
+  vim.notify("There is no git repository in focus.", WARN, { title = "Git" })
+end
+
+--- Path of the entry under the cursor.
+local function entry(state)
+  local node = state.tree and state.tree:get_node()
+  if node and node.type ~= "message" then
+    return node:get_id()
+  end
+end
+
+--- A yes/no question; the action is the first choice, so &lt;CR&gt; confirms and &lt;Esc&gt; cancels.
+local function ask(question, yes, on_yes)
+  vim.ui.select({ yes, "Cancel" }, { prompt = question }, function(choice)
+    if choice == yes then
+      on_yes()
+    end
+  end)
+end
+
+--- Run one git command on the entry under the cursor (or on the repository), then redraw.
+local function simple(state, args, on_entry)
+  local root = repo(state)
+  if not root then
+    return
+  end
+  if on_entry then
+    local path = entry(state)
+    if not path then
+      return
+    end
+    args = vim.list_extend(vim.deepcopy(args), { "--", path })
+  end
+  git(root, args, function(ok, out)
+    refresh()
+    if not ok then
+      notify(root, out, ERROR)
+    end
+  end)
+end
+
+-- ── push ─────────────────────────────────────────────────────────────────────
+
+local function run_push(root, args, what)
+  notify(root, what .. "…")
+  git(root, args, function(ok, out)
+    refresh()
+    notify(root, ok and ("Pushed.\n" .. out) or ("Push failed.\n" .. out), ok and INFO or ERROR)
+  end)
+end
+
+--- Push the current branch. Asks first, unless `confirmed` (the commit-and-push key).
+--- A branch that was never pushed is published to `origin`, after asking.
+local function push(root, confirmed)
+  git(root, { "rev-parse", "--abbrev-ref", "HEAD" }, function(ok, branch)
+    if not ok or branch == "HEAD" then
+      return notify(root, "Not on a branch, so there is nothing to push.", WARN)
+    end
+    git(root, { "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}" }, function(tracked, upstream)
+      if tracked then
+        git(root, { "rev-list", "--count", "@{upstream}..HEAD" }, function(_, count)
+          local n = tonumber(count) or 0
+          if n == 0 then
+            return notify(root, ("Nothing to push: %s has no new commits for %s."):format(branch, upstream))
+          end
+          local commits = n == 1 and "1 commit" or (n .. " commits")
+          local function go()
+            run_push(root, { "push" }, ("Pushing %s to %s"):format(commits, upstream))
+          end
+          if confirmed then
+            go()
+          else
+            ask(("Push %s from %s to %s?"):format(commits, branch, upstream), "Push", go)
+          end
+        end)
+      else
+        git(root, { "remote" }, function(_, remotes)
+          local list = vim.split(remotes, "\n", { trimempty = true })
+          local remote = vim.tbl_contains(list, "origin") and "origin" or list[1]
+          if not remote then
+            return notify(root, "No remote is set up for this repository, so there is nowhere to push.", WARN)
+          end
+          ask(("%s has never been pushed. Publish it to %s?"):format(branch, remote), "Publish " .. branch, function()
+            run_push(root, { "push", "--set-upstream", remote, branch }, ("Publishing %s to %s"):format(branch, remote))
+          end)
+        end)
+      end
+    end)
+  end)
+end
+
+-- ── commit ───────────────────────────────────────────────────────────────────
+
+--- Ask for a message and commit what is staged. With nothing staged, offer to commit every
+--- change (they are only staged once the message is confirmed).
+local function commit(root, then_push)
+  local function write(msg, stage_all)
+    local function run()
+      git(root, { "commit", "-m", msg }, function(ok, out)
+        refresh()
+        if not ok then
+          return notify(root, "Commit failed.\n" .. out, ERROR)
+        end
+        notify(root, out)
+        if then_push then
+          push(root, true)
+        end
+      end)
+    end
+    if not stage_all then
+      return run()
+    end
+    git(root, { "add", "-A" }, function(ok, out)
+      if not ok then
+        return notify(root, out, ERROR)
+      end
+      run()
+    end)
+  end
+
+  local function message(stage_all)
+    local title = then_push and "Commit message, then push (%s)" or "Commit message (%s)"
+    vim.ui.input({ prompt = title:format(name(root)) }, function(msg)
+      msg = vim.trim(msg or "")
+      if msg ~= "" then
+        write(msg, stage_all)
+      end
+    end)
+  end
+
+  git(root, { "status", "--porcelain" }, function(ok, out, res)
+    if not ok then
+      return notify(root, out, ERROR)
+    end
+    local staged, total = 0, 0
+    for line in vim.gsplit(res.stdout or "", "\n", { trimempty = true }) do
+      total = total + 1
+      local index = line:sub(1, 1) -- first column: state in the index
+      if index ~= " " and index ~= "?" then
+        staged = staged + 1
+      end
+    end
+    if total == 0 then
+      return notify(root, "Nothing to commit: no changes.")
+    elseif staged &gt; 0 then
+      return message(false)
+    end
+    local changes = total == 1 and "the 1 change" or ("all %d changes"):format(total)
+    ask(("Nothing is staged in %s. Commit %s?"):format(name(root), changes), "Commit " .. changes, function()
+      message(true)
+    end)
+  end)
+end
+
+-- ── the actions, under the names neo-tree's key mappings use ─────────────────
+
+M.commands = {
+  git_add_file = function(state)
+    simple(state, { "add" }, true)
+  end,
+  git_unstage_file = function(state)
+    simple(state, { "reset", "-q" }, true)
+  end,
+  git_add_all = function(state)
+    simple(state, { "add", "-A" })
+  end,
+  git_toggle_file_stage = function(state)
+    local root, path = repo(state), entry(state)
+    if not root or not path then
+      return
+    end
+    git(root, { "status", "--porcelain", "--", path }, function(_, _, res)
+      local unstaged = false
+      for line in vim.gsplit(res.stdout or "", "\n", { trimempty = true }) do
+        unstaged = unstaged or line:sub(2, 2) ~= " " -- second column: state in the working tree
+      end
+      simple(state, unstaged and { "add" } or { "reset", "-q" }, true)
+    end)
+  end,
+  git_commit = function(state)
+    local root = repo(state)
+    if root then
+      commit(root, false)
+    end
+  end,
+  git_commit_and_push = function(state)
+    local root = repo(state)
+    if root then
+      commit(root, true)
+    end
+  end,
+  git_push = function(state)
+    local root = repo(state)
+    if root then
+      push(root, false)
+    end
+  end,
+  git_pull = function(state)
+    local root = repo(state)
+    if not root then
+      return
+    end
+    ask(("Pull into %s?"):format(name(root)), "Pull", function()
+      notify(root, "Pulling…")
+      git(root, { "pull", "--no-edit" }, function(ok, out)
+        refresh()
+        vim.cmd("checktime") -- reload buffers the pull changed
+        notify(root, ok and out or ("Pull failed.\n" .. out), ok and INFO or ERROR)
+      end)
+    end)
+  end,
+  git_undo_last_commit = function(state)
+    local root = repo(state)
+    if not root then
+      return
+    end
+    git(root, { "log", "-1", "--format=%h %s" }, function(ok, last)
+      if not ok then
+        return notify(root, "There is no commit to undo.", WARN)
+      end
+      ask(("Undo the last commit in %s? Its changes stay staged.\n%s"):format(name(root), last), "Undo commit", function()
+        git(root, { "reset", "--soft", "HEAD~1" }, function(done, out)
+          refresh()
+          notify(root, done and ("Undid " .. last .. "\nIts changes are staged.") or out, done and INFO or ERROR)
+        end)
+      end)
+    end)
+  end,
+  git_revert_file = function(state)
+    local root, path = repo(state), entry(state)
+    if not root or not path then
+      return
+    end
+    local shown = path == root and "every tracked file" or path:sub(#root + 2)
+    ask(("Discard the changes to %s? This cannot be undone."):format(shown), "Discard changes", function()
+      git(root, { "checkout", "HEAD", "--", path }, function(ok, out)
+        refresh()
+        vim.cmd("checktime")
+        if not ok then
+          local untracked = out:find("did not match", 1, true)
+          notify(root, untracked and (shown .. " is not tracked by git. Delete it in the file tree if you do not want it.") or out, ERROR)
+        end
+      end)
+    end)
+  end,
+}
+
+-- ── key hints under the heading ──────────────────────────────────────────────
+
+local ns = vim.api.nvim_create_namespace("gitpanel_hints")
+local HINTS = {
+  { { "ga", "stage" }, { "gu", "unstage" }, { "A", "all" } },
+  { { "gc", "commit" }, { "gp", "push" }, { "?", "more" } },
+}
+
+--- Draw the hints below the first line of the section. Called after every redraw of it.
+function M.hints(state)
+  local buf = state.bufnr
+  if state.name ~= "git_status" or not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  if not (state.path and vim.uv.fs_stat(state.path .. "/.git")) or vim.api.nvim_buf_line_count(buf) == 0 then
+    return
+  end
+  local lines = {}
+  for _, row in ipairs(HINTS) do
+    local chunks = { { "  ", "NeoTreeDimText" } }
+    for i, hint in ipairs(row) do
+      chunks[#chunks + 1] = { i &gt; 1 and " · " or " ", "NeoTreeDimText" }
+      chunks[#chunks + 1] = { hint[1], "NeoTreeGitModified" }
+      chunks[#chunks + 1] = { " " .. hint[2], "NeoTreeDimText" }
+    end
+    lines[#lines + 1] = chunks
+  end
+  vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, { virt_lines = lines })
+end
+
+return M</code></pre></figure>
+        <p>With the cursor in the git section:</p>
+        <div class="tblwrap"><table>
+          <thead><tr><th>Key</th><th>Does</th></tr></thead>
+          <tbody>
+            <tr><td class="k"><kbd>ga</kbd> · <kbd>gu</kbd> · <kbd>gt</kbd></td><td>Stage · unstage · toggle the entry under the cursor</td></tr>
+            <tr><td class="k"><kbd>A</kbd></td><td>Stage everything</td></tr>
+            <tr><td class="k"><kbd>gc</kbd></td><td>Commit. A box opens for the message; <kbd>Enter</kbd> commits, <kbd>Esc</kbd> twice cancels. With nothing staged it offers to commit every change.</td></tr>
+            <tr><td class="k"><kbd>gp</kbd></td><td>Push, after asking. A branch that was never pushed is published to <code>origin</code>.</td></tr>
+            <tr><td class="k"><kbd>gg</kbd></td><td>Commit, then push straight away. In this section <kbd>gg</kbd> does not jump to the top.</td></tr>
+            <tr><td class="k"><kbd>gl</kbd></td><td>Pull, after asking</td></tr>
+            <tr><td class="k"><kbd>gr</kbd></td><td>Discard the changes to the entry, after asking</td></tr>
+            <tr><td class="k"><kbd>gU</kbd></td><td>Undo the last commit. Its changes stay staged.</td></tr>
+          </tbody>
+        </table></div>
+        <p>The message box takes one line. For a longer message, or when git needs a password or a signing passphrase, use lazygit (<kbd>&lt;leader&gt;gg</kbd>) or Neogit (<kbd>&lt;leader&gt;gn</kbd>): the section runs git without a terminal, so a prompt fails with git’s message instead of appearing.</p>
+      </div>
+    </div>
     <div class="step" id="s-p5-2">
       <label class="step-h"><input type="checkbox" data-step="p5.2"><span class="step-t">Walk one change through<small>Edit a line, <kbd>]h</kbd> to it, <kbd>&lt;leader&gt;ghp</kbd> to preview, <kbd>&lt;leader&gt;ghs</kbd> to stage, <kbd>&lt;leader&gt;gg</kbd> to commit.</small></span></label>
     </div>
   </div>
-  <div class="callout gate"><span class="cl">Exit check</span><div><p>A changed line shows a sign, the file appears under <kbd>&lt;leader&gt;ge</kbd>, and <kbd>&lt;leader&gt;gg</kbd> opens lazygit.</p></div></div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>A changed line shows a sign, the file appears under <kbd>&lt;leader&gt;ge</kbd>, the git section names the repository of the file you are in, <kbd>gc</kbd> in that section opens a box for the commit message, and <kbd>&lt;leader&gt;gg</kbd> opens lazygit.</p></div></div>
 </section>
 
 <!-- ───────── PHASE 6 ───────── -->
@@ -978,8 +1594,167 @@ map("n", "&lt;leader&gt;fh", function() Snacks.picker.help() end, { desc = "Help
         <p>The one change from your old spec is <code>default_file_explorer = false</code>. With it on, oil and neo-tree both try to take over when you open a directory.</p>
       </div>
     </div>
+    <div class="step" id="s-p7-4">
+      <label class="step-h"><input type="checkbox" data-step="p7.4"><span class="step-t">Auto-save, like VS Code<small>A file is written one second after you stop typing. Formatting stays with <kbd>Ctrl-S</kbd>.</small></span></label>
+      <div class="step-b">
+        <p>Neovim has no built-in equivalent of VS Code’s <code>"files.autoSave": "afterDelay"</code>, so this adds <code>okuuva/auto-save.nvim</code> and tunes it to behave the same way: the save happens while you are still in insert mode, and at once when you leave the window or Neovim.</p>
+        <figure class="code"><figcaption><span>~/.config/nvim/lua/plugins/autosave.lua</span><button class="copy">Copy</button></figcaption><pre><code data-lang="lua">-- Auto-save, like VS Code's `"files.autoSave": "afterDelay"`.
+-- A file is written one second after the last change (also while still in insert mode), and
+-- at once when you leave its window or Neovim. `&lt;leader&gt;uW` turns it off and on.
+
+local DELAY_MS = 1000
+
+local function real(path)
+  return vim.uv.fs_realpath(path) or vim.fs.normalize(path)
+end
+
+--- Modification time of the file on disk, "" if there is no file.
+local function mtime(name)
+  local st = vim.uv.fs_stat(name)
+  return st and ("%d.%d"):format(st.mtime.sec, st.mtime.nsec) or ""
+end
+
+--- Files another tool hands to the editor and reads back when it exits: a git commit message,
+--- `kubectl edit`, `crontab -e`. `:q!` has to cancel those, and it only can if nothing was written.
+local function handed_over(buf, name)
+  local ft = vim.bo[buf].filetype
+  if ft == "gitcommit" or ft == "gitrebase" or name:find("/.git/", 1, true) then
+    return true
+  end
+  -- a file named on the command line that lies outside the current directory (same rule as
+  -- the file tree in panels.lua: that is a one-off edit, not work on a project)
+  local file, cwd = real(name), real(vim.fn.getcwd()) .. "/"
+  for _, arg in ipairs(vim.fn.argv()) do
+    if real(vim.fn.fnamemodify(arg, ":p")) == file then
+      return not vim.startswith(file, cwd)
+    end
+  end
+  return false
+end
+
+--- True when something else rewrote the file while the buffer has edits of its own. Writing
+--- then makes Neovim stop and ask "really write? (y/n)", and the next key you type would be
+--- the answer. Auto-save stands back; an explicit :w or :e! settles it.
+local function changed_on_disk(buf, name)
+  local seen = vim.b[buf].autosave_seen
+  if seen == nil or seen == mtime(name) then
+    return false
+  end
+  if not vim.b[buf].autosave_warned then
+    vim.b[buf].autosave_warned = true
+    vim.schedule(function()
+      vim.notify(
+        ("%s was changed on disk by something else.\nAuto-save is paused for it: `:e!` takes the version on disk, `:w!` keeps yours."):format(
+          vim.fn.fnamemodify(name, ":~:.")
+        ),
+        vim.log.levels.WARN,
+        { title = "Auto-save" }
+      )
+    end)
+  end
+  return true
+end
+
+local function can_save(buf)
+  if not require("auto-save").enabled() then
+    return false -- switched off while a save was still waiting for its delay: off means off
+  end
+  local bo, name = vim.bo[buf], vim.api.nvim_buf_get_name(buf)
+  if bo.buftype ~= "" or bo.readonly or bo.filetype == "bigfile" then
+    return false -- a panel, a terminal, a read-only or a huge file
+  end
+  if name == "" or name:find("^%a[%w+.-]*://") then
+    return false -- no file behind it (unnamed, oil://, diffview://, ...)
+  end
+  return not handed_over(buf, name) and not changed_on_disk(buf, name)
+end
+
+return {
+  {
+    "okuuva/auto-save.nvim",
+    event = "VeryLazy",
+    cmd = "ASToggle",
+    -- `init` runs at startup, so this also sees the file named on the command line.
+    init = function()
+      vim.api.nvim_create_autocmd({ "BufReadPost", "BufWritePost" }, {
+        group = vim.api.nvim_create_augroup("autosave_seen", { clear = true }),
+        desc = "Remember the file as it was when buffer and disk last agreed",
+        callback = function(ev)
+          vim.b[ev.buf].autosave_seen = mtime(vim.api.nvim_buf_get_name(ev.buf))
+          vim.b[ev.buf].autosave_warned = nil
+        end,
+      })
+    end,
+    opts = {
+      debounce_delay = DELAY_MS,
+      trigger_events = {
+        -- the plugin's defaults wait until you leave insert mode; VS Code does not
+        defer_save = { "InsertLeave", "TextChanged", "TextChangedI" },
+        cancel_deferred_save = {},
+      },
+      condition = can_save,
+      lockmarks = true, -- a write must not move the '[ and '] marks
+    },
+    config = function(_, opts)
+      local autosave = require("auto-save")
+      autosave.setup(opts)
+
+      -- Formatting belongs to a save you ask for (&lt;C-s&gt;, :w), as in VS Code. An automatic save
+      -- must not reflow the line under the cursor, so LazyVim's format-on-save is switched
+      -- off for the buffer for the length of that one write.
+      local group = vim.api.nvim_create_augroup("autosave_noformat", { clear = true })
+      local before = {}
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "AutoSaveWritePre",
+        group = group,
+        callback = function(ev)
+          local buf = ev.data.saved_buffer
+          before[buf] = { vim.b[buf].autoformat }
+          vim.b[buf].autoformat = false
+        end,
+      })
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "AutoSaveWritePost",
+        group = group,
+        callback = function(ev)
+          local buf = ev.data.saved_buffer
+          if before[buf] and vim.api.nvim_buf_is_valid(buf) then
+            vim.b[buf].autoformat = before[buf][1]
+          end
+          before[buf] = nil
+        end,
+      })
+
+      Snacks.toggle({
+        name = "Auto Save",
+        get = autosave.enabled,
+        set = function(on)
+          if on then
+            autosave.on()
+          else
+            autosave.off()
+          end
+        end,
+      }):map("&lt;leader&gt;uW")
+    end,
+  },
+}</code></pre></figure>
+        <p>Most of the file is about the cases where writing by itself would do harm:</p>
+        <div class="tblwrap"><table>
+          <thead><tr><th>Case</th><th>What happens</th></tr></thead>
+          <tbody>
+            <tr><td>A git commit or rebase message, or anything under <code>.git/</code></td><td>Not written. <code>:q!</code> still cancels the commit.</td></tr>
+            <tr><td>A file named on the command line that lies outside the current directory (<code>kubectl edit</code>, <code>crontab -e</code>)</td><td>Not written, for the same reason: the calling tool applies whatever is on disk when the editor exits.</td></tr>
+            <tr><td>Something else rewrote the file while the buffer has edits of its own</td><td>Auto-save pauses for that file and says so once. <code>:e!</code> takes the version on disk, <code>:w!</code> keeps yours.</td></tr>
+            <tr><td>Panels, terminals, read-only files, files with no name, very large files</td><td>Never written.</td></tr>
+            <tr><td>Auto-save switched off with <kbd>&lt;leader&gt;uW</kbd></td><td>Nothing is written, including a save that was already waiting for its delay.</td></tr>
+          </tbody>
+        </table></div>
+        <div class="callout warn"><span class="cl">Heads-up</span><div><p>In a project file, <code>:q!</code> no longer throws edits away: they are already on disk. Undo with <kbd>u</kbd> instead. Undo history is kept across restarts.</p></div></div>
+      </div>
+    </div>
   </div>
-  <div class="callout gate"><span class="cl">Exit check</span><div><p>A new Lua file indents by four, <kbd>&lt;leader&gt;fg</kbd> greps the project, and <kbd>-</kbd> opens oil on the current file’s directory.</p></div></div>
+  <div class="callout gate"><span class="cl">Exit check</span><div><p>A new Lua file indents by four, <kbd>&lt;leader&gt;fg</kbd> greps the project, <kbd>-</kbd> opens oil on the current file’s directory, and an edit is on disk a second after you stop typing.</p></div></div>
 </section>
 
 <!-- ───────── PHASE 8 ───────── -->
@@ -1044,6 +1819,8 @@ git add -A &amp;&amp; git commit -m "panels, languages, git, debug, personal set
       <tr><td class="k"><kbd>&lt;leader&gt;l</kbd> · <code>:Mason</code> · <code>:LazyExtras</code></td><td>Plugins · language tools · LazyVim extras</td></tr>
       <tr><td class="k"><kbd>&lt;leader&gt;L</kbd></td><td>LazyVim changelog</td></tr>
       <tr><td class="k"><kbd>&lt;leader&gt;uC</kbd></td><td>Preview colorschemes (tokyonight is the default; catppuccin is bundled)</td></tr>
+      <tr><td class="k"><kbd>Ctrl-S</kbd></td><td>Save now and format. Auto-save writes without formatting.</td></tr>
+      <tr><td class="k"><kbd>&lt;leader&gt;uW</kbd></td><td>Auto-save off or on</td></tr>
       <tr><td class="k"><kbd>&lt;leader&gt;qq</kbd></td><td>Quit everything</td></tr>
     </tbody>
   </table></div>
@@ -1063,16 +1840,19 @@ git add -A &amp;&amp; git commit -m "panels, languages, git, debug, personal set
 ├── Brewfile                 <b>yours</b> <i>· command-line tools for just deps</i>
 ├── scripts/                 <b>yours</b> <i>· bootstrap, doctor, smoke, update (Lua, run by Neovim)</i>
 └── lua/
+    ├── gitfocus.lua         <b>yours</b> <i>· Phase 5</i>
+    ├── gitpanel.lua         <b>yours</b> <i>· Phase 5</i>
     ├── config/
     │   ├── lazy.lua
     │   ├── options.lua      <b>yours</b> <i>· Phase 7</i>
     │   ├── keymaps.lua      <b>yours</b> <i>· Phase 7</i>
-    │   └── autocmds.lua
+    │   └── autocmds.lua     <b>yours</b> <i>· Phase 5, one line</i>
     └── plugins/
         ├── panels.lua       <b>yours</b> <i>· Phase 3</i>
         ├── rust.lua         <b>yours</b> <i>· Phase 4</i>
         ├── git.lua          <b>yours</b> <i>· Phase 5</i>
-        └── oil.lua          <b>yours</b> <i>· Phase 7</i></pre>
+        ├── oil.lua          <b>yours</b> <i>· Phase 7</i>
+        └── autosave.lua     <b>yours</b> <i>· Phase 7</i></pre>
   <h3 id="files-json">Expected <code>lazyvim.json</code></h3>
   <p><code>:LazyExtras</code> maintains this file. It is shown so you can diff yours against it, or paste it in to enable everything at once.</p>
   <figure class="code"><figcaption><span>~/.config/nvim/lazyvim.json</span><button class="copy">Copy</button></figcaption><pre><code data-lang="json">{
@@ -1193,7 +1973,7 @@ cd ~/.config/nvim &amp;&amp; just setup</code></pre></figure>
     <p class="side-h">Progress</p>
     <div class="ringbox">
       <svg class="ring" width="64" height="64" viewBox="0 0 64 64" aria-hidden="true"><circle class="bg" cx="32" cy="32" r="26"/><circle class="fg" id="ring-fg" cx="32" cy="32" r="26" stroke-dasharray="163.4" stroke-dashoffset="163.4"/></svg>
-      <div class="ringtxt"><b id="ring-n">0 / 27</b><span id="ring-s">steps done</span></div>
+      <div class="ringtxt"><b id="ring-n">0 / 30</b><span id="ring-s">steps done</span></div>
     </div>
     <a class="nextup" id="nextup" href="#p0"><small>Next up</small><span id="nextup-t">Commit the hand-rolled config</span></a>
     <button class="linkbtn" id="reset">Reset progress</button>
@@ -1498,9 +2278,17 @@ const flow=(function(){
 const boxes=$$('input[data-step]');
 const navLinks=new Map($$('.left a[href^="#"]').map(a=>[a.getAttribute('href').slice(1),a]));
 // Steps already carried out on this machine on 20 Nov 2026. Used until you tick or untick something yourself.
-const EXECUTED=['p0.1','p0.2','p1.1','p1.2','p1.3','p1.4','p1.5','p2.1','p2.2','p2.3','p3.1','p3.2','p4.1','p4.2','p4.4','p5.1','p6.1','p6.2','p6.3','p7.1','p7.2','p7.3','p8.2'];
+const EXECUTED=['p0.1','p0.2','p1.1','p1.2','p1.3','p1.4','p1.5','p2.1','p2.2','p2.3','p3.1','p3.2','p4.1','p4.2','p4.4','p5.1','p5.3','p5.4','p6.1','p6.2','p6.3','p7.1','p7.2','p7.3','p7.4','p8.2'];
 const STEPS_KEY='nvplan.steps.v2';
-const doneSet=new Set(store.get(STEPS_KEY,EXECUTED));
+const savedSteps=store.get(STEPS_KEY,null);
+const doneSet=new Set(savedSteps||EXECUTED);
+// Steps added to the plan and carried out after this browser may have saved its ticks: tick each once.
+const LATE=['p7.4','p5.3','p5.4'], lateSeen=store.get('nvplan.late',[]);
+if(savedSteps&&LATE.some(id=>!lateSeen.includes(id))){
+  LATE.forEach(id=>{if(!lateSeen.includes(id))doneSet.add(id)});
+  store.set(STEPS_KEY,Array.from(doneSet));
+}
+store.set('nvplan.late',LATE);
 function stats(){
   const m={};
   boxes.forEach(b=>{const p=b.dataset.step.split('.')[0];(m[p]=m[p]||{n:0,d:0}).n++;if(b.checked)m[p].d++});
