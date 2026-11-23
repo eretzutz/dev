@@ -10,8 +10,26 @@
  * `ref` on a follow-up). Any other exit refuses: nothing is recorded and the
  * caller gets the hook's message. A project uses it to tie the board to its
  * own source of truth.
+ *
+ * Every plan also has a page: an HTML file in the project's plan-page
+ * convention (plandoc.mjs). document_plan takes its path as `doc`, checks it,
+ * and keeps the result; MCP_BOARD_PLAN_DOC says whether a plan without a
+ * passing page is recorded with a reminder (warn, the default), refused
+ * (require), or not looked at (off).
  */
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import {
+  DOCS_ROOT,
+  PLAN_DOC_MODE,
+  PLAN_DOC_MODE_PROBLEM,
+  RULES,
+  inspectDoc,
+  resolveDoc,
+  sha256,
+  showPath,
+  writePlanDoc,
+} from "./plandoc.mjs";
 import { BOARD_FILE, newId, readBoard, withBoard } from "./store.mjs";
 
 // ─── Tool definitions (MCP schema) ─────────────────────────────────────────
@@ -27,11 +45,18 @@ export const STEP_STATUSES = [
 ];
 export const PROGRESS_STATUSES = STEP_STATUSES.slice(1);
 
+const PAGE_RULE =
+  " Every plan has a page: pass doc, the path of its HTML page (plan_doc_template writes a starter page, check_plan_doc checks it).";
+const PAGE_SENTENCE = {
+  off: "",
+  warn: `${PAGE_RULE} Without a passing page the plan is still recorded, and the result says what is missing.`,
+  require: `${PAGE_RULE} Without a passing page this tool refuses the plan and records nothing.`,
+}[PLAN_DOC_MODE];
+
 export const TOOLS = [
   {
     name: "document_plan",
-    description:
-      "Planner: create or replace a structured implementation plan. Returns plan_id. Call this before any implementation work. Replacing a plan keeps the status of every step whose id is unchanged.",
+    description: `Planner: create or replace a structured implementation plan. Returns plan_id. Call this before any implementation work. Replacing a plan keeps the status of every step whose id is unchanged.${PAGE_SENTENCE}`,
     inputSchema: {
       type: "object",
       properties: {
@@ -68,9 +93,48 @@ export const TOOLS = [
           type: "string",
           description: "If set, replace an existing plan with this id",
         },
+        doc: {
+          type: "string",
+          description:
+            "The plan's HTML page, e.g. docs/<topic>/<slug>.html, relative to the docs root (get_board_summary shows it). On a replace, omit it to keep the page already recorded.",
+        },
         metadata: { type: "object", description: "Arbitrary extra fields" },
       },
       required: ["title", "goal", "steps"],
+    },
+  },
+  {
+    name: "plan_doc_template",
+    description:
+      "Planner: start a plan's HTML page from the board's template, in this project's plan-page convention (the request verbatim in a leading comment, a left contents nav, a right at-a-glance panel, animated data-flow and process diagrams). Writes a new file only. Fill it in, check_plan_doc it, then pass its path as doc to document_plan. Prompt plan_doc has the convention.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Where to write it, e.g. docs/<topic>/<slug>.html, relative to the docs root",
+        },
+        title: { type: "string", description: "The plan's title" },
+        brief: {
+          type: "string",
+          description:
+            "The request, word for word, then anything measured or decided; kept in the page's leading comment",
+        },
+        lede: { type: "string", description: "One paragraph: what the plan changes, and why" },
+      },
+      required: ["path", "title", "brief"],
+    },
+  },
+  {
+    name: "check_plan_doc",
+    description:
+      "Check a plan's HTML page against the plan-page convention: E rules must pass, W rules are advice. Give path, or plan_id to check the page that plan records (with its step titles). Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The page, relative to the docs root" },
+        plan_id: { type: "string", description: "Check the page this plan records" },
+      },
     },
   },
   {
@@ -368,8 +432,75 @@ function requirePlan(board, planId) {
   return plan;
 }
 
+// ─── Plan pages ─────────────────────────────────────────────────────────────
+
+const NEXT_MISSING =
+  'Write this plan as a page: plan_doc_template {path: "docs/<topic>/<slug>.html", title, brief: the request word for word}, fill it in (prompt plan_doc has the convention), check_plan_doc {path}, then document_plan again with plan_id and doc.';
+const NEXT_FIX =
+  "Fix the page (the errors above), check_plan_doc {path} until it passes, then document_plan again with plan_id (the doc is kept).";
+const PAGE_ITEM = /^plan page \S+ passes check_plan_doc\b/;
+const pageItem = (p) => `plan page ${p} passes check_plan_doc and says what was built`;
+
+/** What document_plan's result says about the page. */
+function pageAnswer(page) {
+  const mode = PLAN_DOC_MODE;
+  if (!page) return { status: "missing", mode, next: NEXT_MISSING };
+  const answer = { status: page.ok ? "ok" : "failing", mode, path: page.path, errors: page.errors, warnings: page.warnings };
+  if (!page.exists)
+    return {
+      ...answer,
+      next: `Write it first: plan_doc_template {path: "${page.path}", title, brief}, fill it in, check_plan_doc, then document_plan again with plan_id.`,
+    };
+  return page.ok ? answer : { ...answer, next: NEXT_FIX };
+}
+
+function refusal(page) {
+  const head = "plan page required (MCP_BOARD_PLAN_DOC=require)";
+  if (!page)
+    return `${head}: pass doc, the path of this plan's HTML page. Start one with plan_doc_template {path: "docs/<topic>/<slug>.html", title, brief: the request word for word}, fill it in (prompt plan_doc), check_plan_doc {path}, then document_plan again with doc. Nothing was recorded.`;
+  return `${head}: ${page.exists ? `${page.path}: ` : ""}${page.errors.join("; ")}. Nothing was recorded.`;
+}
+
+/** The page as it is now, for the reads: null when pages are off and the plan has none. */
+function pageNow(plan) {
+  if (PLAN_DOC_MODE === "off") return plan.doc?.path ? { path: plan.doc.path } : null;
+  if (!plan.doc?.path) return { status: "missing", next: "plan_doc_template, then document_plan with plan_id and doc" };
+  const page = inspectDoc(plan.doc.path, { steps: plan.steps.map((s) => s.title) });
+  if (!page.exists) return { path: page.path, status: "failing", errors: page.errors };
+  const behind = plan.status === "done" && plan.doc.validated_sha256 === page.sha256;
+  return {
+    path: page.path,
+    status: !page.ok ? "failing" : behind ? "behind" : "ok",
+    changed: page.sha256 !== plan.doc.sha256,
+    errors: page.errors,
+    warnings: page.warnings,
+    ...(behind ? { next: "validated, and the page has not changed since: write what was verified into it" } : {}),
+  };
+}
+
+function pageSha(p) {
+  try {
+    return sha256(fs.readFileSync(resolveDoc(p), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 const handlers = {
   document_plan(args) {
+    const prior = args.plan_id ? readBoard().plans[args.plan_id] : undefined;
+    const doc = args.doc || prior?.doc?.path || null;
+    const titled = (args.steps || []).map((s, i) => ({ id: s.id || `step_${i + 1}`, title: s.title }));
+    const page =
+      PLAN_DOC_MODE === "off" || !doc
+        ? null
+        : inspectDoc(doc, {
+            steps: titled.map((s) => s.title),
+            previousSha: prior?.doc?.sha256 ?? null,
+            stepsChanged:
+              !!prior && JSON.stringify(titled) !== JSON.stringify(prior.steps.map((s) => ({ id: s.id, title: s.title }))),
+          });
+    if (PLAN_DOC_MODE === "require" && !page?.ok) throw new Refused(refusal(page));
     return withBoard((board) => {
       const planId = args.plan_id || newId("plan");
       const old = board.plans[planId];
@@ -386,25 +517,63 @@ const handlers = {
           ...(prev?.percent != null ? { percent: prev.percent } : {}),
         };
       });
+      const acceptance = args.acceptance || [];
       const plan = {
         plan_id: planId,
         title: args.title,
         goal: args.goal,
         steps,
-        acceptance: args.acceptance || [],
+        acceptance: page ? [...acceptance.filter((a) => !PAGE_ITEM.test(a)), pageItem(page.path)] : acceptance,
+        ...(doc
+          ? {
+              doc: page
+                ? {
+                    path: page.path,
+                    sha256: page.sha256 ?? null,
+                    checked_at: now(),
+                    errors: page.errors,
+                    warnings: page.warnings,
+                  }
+                : { path: showPath(resolveDoc(doc)) },
+            }
+          : {}),
         metadata: args.metadata || {},
         status: old?.status || "active",
         created_at: old?.created_at || now(),
         updated_at: now(),
       };
       board.plans[planId] = plan;
-      return ok({ plan_id: planId, plan });
+      return ok({ plan_id: planId, plan, ...(PLAN_DOC_MODE === "off" ? {} : { plan_doc: pageAnswer(page) }) });
+    });
+  },
+
+  plan_doc_template(args) {
+    for (const k of ["path", "title", "brief"])
+      if (typeof args[k] !== "string" || !args[k].trim()) throw new Refused(`${k} is required`);
+    const page = writePlanDoc(args.path, { title: args.title, brief: args.brief, lede: args.lede });
+    return ok({
+      ...page,
+      written: true,
+      rules: RULES,
+      next: `Fill in ${page.path}: replace every placeholder (lede, summary, both diagrams, the steps with the titles you will give document_plan, acceptance, files, open questions), keeping the brief, both panels and the motion. Then check_plan_doc {path: "${page.path}"}, then document_plan {..., doc: "${page.path}"}.`,
+    });
+  },
+
+  check_plan_doc(args) {
+    const plan = args.plan_id ? requirePlan(readBoard(), args.plan_id) : null;
+    const p = args.path || plan?.doc?.path;
+    if (!p) throw new Refused(plan ? `plan ${plan.plan_id} has no page yet. ${NEXT_MISSING}` : "give path, or plan_id");
+    const page = inspectDoc(p, { steps: plan ? plan.steps.map((s) => s.title) : [] });
+    return ok({
+      ...page,
+      ...(plan?.doc?.sha256 ? { changed_since_recorded: page.sha256 !== plan.doc.sha256 } : {}),
+      ...(page.ok ? {} : { rules: RULES }),
     });
   },
 
   get_plan(args) {
     const plan = readBoard().plans[args.plan_id];
-    return plan ? ok(plan) : err(`plan not found: ${args.plan_id}`);
+    return plan ? ok({ ...plan, page: pageNow(plan) }) : err(`plan not found: ${args.plan_id}`);
   },
 
   list_plans(args) {
@@ -418,6 +587,8 @@ const handlers = {
         title: p.title,
         status: p.status,
         steps: p.steps.length,
+        doc: p.doc?.path ?? null,
+        page: pageNow(p)?.status ?? null,
         updated_at: p.updated_at,
       })),
     });
@@ -501,8 +672,13 @@ const handlers = {
   submit_validation(args) {
     const plan = requirePlan(readBoard(), args.plan_id);
     const { hook } = runHook({ tool: "submit_validation", args, plan });
+    const validatedSha = args.passed && plan.doc?.path ? pageSha(plan.doc.path) : null;
     return withBoard((board) => {
       const plan = requirePlan(board, args.plan_id);
+      if (validatedSha && plan.doc) {
+        plan.doc.validated_sha256 = validatedSha;
+        plan.doc.validated_at = now();
+      }
       const record = {
         validation_id: newId("val"),
         plan_id: args.plan_id,
@@ -587,6 +763,9 @@ const handlers = {
       board_path: BOARD_FILE,
       updated_at: board.updated_at,
       hook: HOOK.length ? HOOK.join(" ") : null,
+      docs_root: DOCS_ROOT,
+      plan_doc_mode: PLAN_DOC_MODE,
+      ...(PLAN_DOC_MODE_PROBLEM ? { plan_doc_mode_problem: PLAN_DOC_MODE_PROBLEM } : {}),
       plans: planIds
         .map((id) => board.plans[id])
         .filter(Boolean)
@@ -598,6 +777,7 @@ const handlers = {
           goal: p.goal,
           steps: p.steps.map((s) => ({ id: s.id, title: s.title, status: s.status, percent: s.percent })),
           acceptance: p.acceptance,
+          page: pageNow(p),
         })),
       recent_progress: board.progress.filter(mine).slice(-20),
       open_followups: board.followups.filter((f) => f.status === "open" && mine(f)),

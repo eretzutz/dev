@@ -1,0 +1,987 @@
+<!--
+- document a plan in html with left/right nav panels, dataflow/process diagram motion/animation, to implement enhancement to @mcp-board/ so that its planner will remember to output its plans using the format/convention being used here
+- measured read-only, 22 Nov 2026: mcp-board 1.1.0, node smoke.mjs OK on Node 26.13.1. The planner's only
+  output is document_plan {title, goal, steps, acceptance} into board.json. prompts/PLANNER.md says
+  nothing about a page. The server's instructions are one sentence about get_board_summary.
+- "the format/convention being used here": docs/omlx/shared-model-host.html, docs/omlx/cf-tunnel.html and
+  docs/neovim/setup.html, and berith/docs/plan.html written from the same request text. One self-contained
+  HTML page per plan: the request verbatim in a leading comment, a left contents nav, a right at-a-glance
+  panel, animated SVG data-flow and process diagrams, reduced motion, light and dark. Class names differ
+  from page to page; the features do not.
+- the board is configured in ~/.claude.json for two projects, xiliap and berith, each with its own
+  MCP_BOARD_PROMPTS and hook. Neither prompt folder mentions HTML. berith makes plans with
+  `just board-plan` from docs/handoff.md.
+- a prototype check of rules E1-E6 (scratchpad, about 50 lines): 0 errors on each of the four pages;
+  a chat-style page fails all six.
+- PLAN ONLY, 22 Nov 2026: nothing in mcp-board is changed yet.
+- DECIDED 22 Nov 2026 ("implement it, keep warn as default"): MCP_BOARD_PLAN_DOC defaults to warn.
+- BUILT 22 Nov 2026, uncommitted: mcp-board 1.2.0, P0 to P4. New: plandoc.mjs, templates/plan.html,
+  conventions/PLAN_DOC.md. Changed: tools.mjs, server.mjs, cli.mjs, smoke.mjs, prompts/*.md,
+  README.md, package.json. Two differences from the plan: the reads call the live view of a page
+  `page` (the stored record stays `doc`), and the acceptance item is added whenever a plan has a
+  page, passing or not, because a failing page is the one the validator most needs to look at.
+  See "What is verified".
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plan pages from the mcp-board planner &middot; Implementation plan</title>
+<meta name="description" content="The mcp-board planner records a plan as JSON on the board and forgets the HTML plan page this repo writes for every plan. The plan: write the page convention down as checkable rules, give the planner a starter page, put the rule where Claude Code reads it every turn, and let document_plan warn about or refuse a plan without a page." />
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #57606a;
+    --accent: #2563eb;
+    --border: #d8dee4;
+    --code-bg: #f5f7fa;
+    --head-bg: #f0f3f6;
+    --panel: #ffffff;
+    --warn: #9a3412;
+    --warn-bg: #fff7ed;
+    --ok: #15803d;
+    --ok-bg: #f0fdf4;
+    --bad: #b91c1c;
+    --bad-bg: #fef2f2;
+    --unk: #a16207;
+    --unk-bg: #fefce8;
+    --req: #2563eb;
+    --res: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --accent: #6ea8fe;
+      --border: #30363d;
+      --code-bg: #161b22;
+      --head-bg: #161b22;
+      --panel: #11161d;
+      --warn: #fdba74;
+      --warn-bg: #2a1c0f;
+      --ok: #86efac;
+      --ok-bg: #10231a;
+      --bad: #fca5a5;
+      --bad-bg: #2a1215;
+      --unk: #fde68a;
+      --unk-bg: #2a2410;
+      --req: #6ea8fe;
+      --res: #86efac;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .progress {
+    position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 10;
+    background: var(--accent); transform-origin: 0 50%; transform: scaleX(0);
+  }
+  .shell {
+    display: grid;
+    grid-template-columns: 15rem minmax(0, 1fr) 17.5rem;
+    gap: 2.75rem;
+    max-width: 94rem;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 6rem;
+  }
+  .rail { position: sticky; top: 1.5rem; align-self: start; max-height: calc(100vh - 3rem); overflow-y: auto; font-size: .88em; }
+  .rail h2 { font-size: .74em; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); border: 0; margin: 0 0 .7em; padding: 0; }
+  .left nav ol { list-style: none; margin: 0; padding: 0; counter-reset: sec; }
+  .left nav > ol > li { counter-increment: sec; }
+  .left nav a {
+    display: block; padding: .28em .7em; margin: 1px 0;
+    color: var(--muted); text-decoration: none;
+    border-left: 2px solid var(--border); line-height: 1.4;
+    transition: color .2s ease, border-color .2s ease, background .2s ease;
+  }
+  .left nav > ol > li > a::before { content: counter(sec) ". "; font-variant-numeric: tabular-nums; }
+  .left nav ol ol a { padding-left: 1.6em; font-size: .94em; }
+  .left nav a:hover { color: var(--fg); }
+  .left nav a[aria-current="true"] { color: var(--accent); border-left-color: var(--accent); background: var(--code-bg); font-weight: 600; }
+  .rail-tools { margin-top: 1.4em; padding-top: 1em; border-top: 1px solid var(--border); }
+  .rail-tools button {
+    font: inherit; font-size: .95em; cursor: pointer; width: 100%;
+    color: var(--fg); background: var(--code-bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: .45em .7em;
+  }
+  .rail-tools button:hover { border-color: var(--accent); }
+  .rail-tools p { margin: .5em 0 0; color: var(--muted); font-size: .9em; line-height: 1.45; }
+  .right .card { border: 1px solid var(--border); border-radius: 8px; padding: .8em .95em; margin: 0 0 1em; background: var(--panel); }
+  .right .card h3 { font-size: .98em; margin: 0 0 .35em; }
+  .right dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .2em .7em; line-height: 1.45; }
+  .right dt { color: var(--muted); }
+  .right dd { margin: 0; overflow-wrap: anywhere; }
+  .right ul { margin: .2em 0; padding-left: 1.1em; line-height: 1.45; }
+  .right li { margin: .25em 0; overflow-wrap: anywhere; }
+  .right code { font-size: .86em; }
+  .legend { display: grid; gap: .35em; }
+  .legend span { display: inline-flex; align-items: center; gap: .5em; }
+  .swatch { width: 1.6em; height: .7em; border-radius: 3px; display: inline-block; flex: none; }
+  main { min-width: 0; }
+  h1, h2, h3, h4 { line-height: 1.25; font-weight: 650; }
+  h1 { font-size: 2.05em; margin: 0 0 .3em; }
+  main h2 { font-size: 1.42em; margin: 2.6em 0 .6em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+  main h3 { font-size: 1.12em; margin: 1.9em 0 .5em; }
+  h4 { font-size: .98em; margin: 1.4em 0 .4em; color: var(--muted); }
+  p, li { margin: .5em 0; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .12em .38em; border-radius: 4px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1em 1.2em; overflow-x: auto; font-size: .84em; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  pre .add { color: var(--ok); }
+  pre .del { color: var(--bad); }
+  pre .cm { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .9em; }
+  th, td { border: 1px solid var(--border); padding: .45em .7em; text-align: left; vertical-align: top; }
+  th { background: var(--head-bg); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  .lede { color: var(--muted); font-size: 1.06em; margin-bottom: 1.4em; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4em; margin: 0 0 2em; }
+  .note, .warn, .decision {
+    border-left: 3px solid var(--accent); background: var(--code-bg);
+    padding: .8em 1em; margin: 1.2em 0; border-radius: 0 6px 6px 0;
+  }
+  .warn { border-left-color: var(--warn); background: var(--warn-bg); }
+  .decision { border-left-color: var(--ok); background: var(--ok-bg); }
+  .small { font-size: .88em; color: var(--muted); }
+  .phase { border: 1px solid var(--border); border-radius: 8px; padding: .9em 1.2em; margin: 1.2em 0; }
+  .phase h3, .phase h4 { margin-top: 0; }
+  .phase .done-when { margin: .7em 0 0; padding: .6em .9em; border-radius: 6px; background: var(--code-bg); }
+  .phase .status { margin: 0 0 .7em; padding: .6em .9em; border-radius: 6px; background: var(--ok-bg); color: var(--ok); }
+  .tag {
+    display: inline-block; font-size: .72em; font-weight: 650; letter-spacing: .03em;
+    text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: .08em .65em; vertical-align: middle;
+  }
+  .tag.ok { color: var(--ok); border-color: currentColor; background: var(--ok-bg); }
+  .tag.bad { color: var(--bad); border-color: currentColor; background: var(--bad-bg); }
+  .tag.unk { color: var(--unk); border-color: currentColor; background: var(--unk-bg); }
+  .tag.acc { color: var(--accent); border-color: currentColor; }
+  td .tag { white-space: nowrap; }
+  figure.diagram { margin: 1.6em 0; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 1em 1em .6em; }
+  figure.diagram svg { display: block; width: 100%; height: auto; overflow: visible; }
+  @media (max-width: 720px) {
+    figure.diagram { overflow-x: auto; }
+    figure.diagram svg { min-width: 680px; }
+  }
+  figure.diagram figcaption { color: var(--muted); font-size: .86em; margin-top: .6em; line-height: 1.5; }
+  svg text { fill: var(--fg); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  svg text.sub { fill: var(--muted); font-size: 11.5px; }
+  svg text.lane { fill: var(--muted); font-size: 11px; letter-spacing: .14em; font-weight: 650; }
+  svg text.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  svg text.lbl { fill: var(--muted); font-size: 11px; }
+  svg .node rect { fill: var(--code-bg); stroke: var(--border); stroke-width: 1.5; }
+  svg .node.ok rect { stroke: var(--ok); }
+  svg .node.bad rect { stroke: var(--bad); fill: var(--bad-bg); }
+  svg .node.unk rect { stroke: var(--unk); fill: var(--unk-bg); }
+  svg .node.acc rect { stroke: var(--accent); }
+  svg .group { fill: none; stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 4 5; }
+  svg .wire { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+  svg .axis { stroke: var(--border); stroke-width: 2; }
+  svg .flow { fill: none; stroke-width: 2; stroke-dasharray: 6 6; animation: march 1s linear infinite; }
+  svg .flow.req { stroke: var(--req); }
+  svg .flow.res { stroke: var(--res); }
+  svg .flow.bad { stroke: var(--bad); animation-duration: 2.4s; }
+  svg .flow.par { stroke: var(--muted); }
+  svg .arrowhead { fill: var(--muted); }
+  svg .packet.req { fill: var(--req); }
+  svg .packet.res { fill: var(--res); }
+  svg .packet.bad { fill: var(--bad); }
+  svg .cross { fill: var(--bad); font-weight: 700; }
+  svg .pulse { animation: pulse 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes march { to { stroke-dashoffset: -12; } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  .paused svg .flow, .paused svg .pulse { animation-play-state: paused; }
+  @media (prefers-reduced-motion: reduce) {
+    svg .flow, svg .pulse { animation: none; }
+    svg .packet, svg .cursor { display: none; }
+  }
+  @media (max-width: 1240px) {
+    .shell { grid-template-columns: 14rem minmax(0, 1fr); }
+    .right { grid-column: 2; position: static; max-height: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0 1em; }
+    .right > h2 { grid-column: 1 / -1; }
+  }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: minmax(0, 1fr); padding: 1.5rem 1.1rem 4rem; gap: 1.5rem; }
+    .left { position: static; max-height: none; border: 1px solid var(--border); border-radius: 8px; padding: .8em 1em; }
+    .left nav a { border-left: 0; padding: .18em 0; }
+    .left nav ol ol a { padding-left: 1.2em; }
+    .right { grid-column: 1; }
+  }
+  @media print {
+    :root {
+      --bg: #fff; --fg: #000; --muted: #444; --accent: #000; --border: #999; --code-bg: #fff; --head-bg: #eee;
+      --panel: #fff; --warn: #000; --warn-bg: #fff; --ok: #000; --ok-bg: #fff; --bad: #000; --bad-bg: #fff; --unk: #000; --unk-bg: #fff;
+    }
+    .progress, .left, .rail-tools { display: none; }
+    .shell { display: block; padding: 0; max-width: none; }
+    .right { position: static; max-height: none; display: block; }
+    body { font-size: 10.5pt; line-height: 1.5; }
+    svg .packet, svg .cursor { display: none; }
+    h2, h3, h4 { break-after: avoid; }
+    table, pre, .phase, .note, .warn, .decision, figure { break-inside: avoid; }
+  }
+</style>
+<style>
+  /* this page: the context timeline */
+  svg .bar { stroke-width: 1.5; }
+  svg .bar.req { fill: var(--req); fill-opacity: .16; stroke: var(--req); }
+  svg .bar.ok { fill: var(--res); fill-opacity: .16; stroke: var(--res); }
+  svg .bar.acc { fill: var(--accent); fill-opacity: .3; stroke: var(--accent); }
+  svg .bar.unk { fill: var(--unk-bg); stroke: var(--unk); }
+  svg .bar.gone { fill: none; stroke: var(--bad); stroke-dasharray: 5 5; }
+  svg .tick { stroke: var(--border); stroke-width: 1.5; }
+  svg .cursor { stroke: var(--accent); stroke-width: 2; }
+  svg .compact { stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 3 4; }
+  ol.steps { padding-left: 1.4em; }
+  ol.steps > li { margin: .7em 0; }
+  td.nw { white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="progress" id="progress" aria-hidden="true"></div>
+
+<div class="shell">
+
+<!-- ================= LEFT: contents ================= -->
+<aside class="rail left" aria-label="Contents">
+  <h2>Contents</h2>
+  <nav>
+    <ol>
+      <li><a href="#summary">Summary</a></li>
+      <li><a href="#convention">The convention, as rules</a></li>
+      <li><a href="#forgets">Why the planner forgets</a></li>
+      <li><a href="#flow">Data flow</a></li>
+      <li><a href="#process">Process</a></li>
+      <li><a href="#change">The change</a>
+        <ol>
+          <li><a href="#gate">The gate: document_plan</a></li>
+          <li><a href="#tools">New tools and a prompt</a></li>
+          <li><a href="#reads">What each session reads</a></li>
+        </ol>
+      </li>
+      <li><a href="#phases">Phases</a></li>
+      <li><a href="#testing">Testing</a></li>
+      <li><a href="#verified">What is verified</a></li>
+      <li><a href="#risks">Compatibility and risks</a></li>
+      <li><a href="#alternatives">Alternatives considered</a></li>
+      <li><a href="#files">Files</a></li>
+      <li><a href="#open">Open questions</a></li>
+    </ol>
+  </nav>
+  <div class="rail-tools">
+    <button type="button" id="anim-toggle" aria-pressed="false">Pause diagrams</button>
+    <p>Diagrams start paused when your system asks for reduced motion.</p>
+  </div>
+</aside>
+
+<!-- ================= CENTER: document ================= -->
+<main>
+
+<h1>Plan pages from the mcp-board planner</h1>
+<p class="lede">
+  Every plan in this repo is an HTML page like this one: the request kept at the top of
+  the file, contents on the left, the essentials on the right, and diagrams that move.
+  The mcp-board planner writes its plans only as JSON on the board, and nothing reminds
+  it of the page. The plan is to write the convention down as rules a program can check,
+  give the planner a starter page that already passes them, say it where Claude Code
+  reads it every turn, and have <code>document_plan</code> warn about, or refuse, a plan
+  that has no page.
+</p>
+<div class="meta">
+  <span class="tag">Plan</span>
+  <span class="tag">Planned 22 Nov 2026</span>
+  <span class="tag">mcp-board 1.1.0 &rarr; 1.2.0</span>
+  <span class="tag ok">rules checked against 4 existing pages</span>
+  <span class="tag ok">built 22 Nov 2026 &middot; smoke passes</span>
+  <span class="tag acc">default: warn</span>
+  <span class="tag unk">uncommitted</span>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="summary">Summary</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Today</th><th>What we found</th><th>Plan</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Format</strong><br /><span class="tag unk">unwritten</span></td>
+      <td>Three pages in <code>docs/</code>, and berith&rsquo;s <code>docs/plan.html</code>, share one format. It is written down nowhere.</td>
+      <td>Their class names differ (<code>rail left</code> / <code>rail right</code>, <code>panel left nav</code>, <code>nav</code> + <code>aside</code>). Their features do not. A prototype check of six features passes all four pages and fails a chat-style page on all six.</td>
+      <td><code>plandoc.mjs</code>: the features as rules, E1&ndash;E6 required and W1&ndash;W8 advised. <code>templates/plan.html</code>: a starter page that passes them.</td>
+    </tr>
+    <tr>
+      <td><strong>Memory</strong><br /><span class="tag bad">forgets</span></td>
+      <td>The planner learns its job from <code>prompts/PLANNER.md</code>, which asks for <code>document_plan</code> and nothing else.</td>
+      <td>A role prompt is read once, when the session runs <code>/mcp__board__planner</code>. A session that skips it never sees it, and after <code>/compact</code> only a summary is left. xiliap and berith serve their own prompts, so a change to the default <code>PLANNER.md</code> reaches neither.</td>
+      <td>Put the rule where it is read every time: the server&rsquo;s instructions (Claude Code puts them in the system prompt), <code>document_plan</code>&rsquo;s description, and the result <code>document_plan</code> returns.</td>
+    </tr>
+    <tr>
+      <td><strong>Board</strong><br /><span class="tag unk">gap</span></td>
+      <td>A plan is a title, goal, steps and acceptance in <code>board.json</code>.</td>
+      <td>Nothing on the board points to a page. The orchestrator and the validator cannot find one, and nobody can tell a plan with a page from a plan without one.</td>
+      <td><code>document_plan</code> takes <code>doc</code>, the page&rsquo;s path. The plan keeps <code>doc</code> with its path, hash and check result. <code>get_plan</code>, <code>list_plans</code> and <code>get_board_summary</code> show it.</td>
+    </tr>
+    <tr>
+      <td><strong>Enforcement</strong><br /><span class="tag bad">none</span></td>
+      <td><code>document_plan</code> records whatever it is given.</td>
+      <td>A reminder can be ignored; a refusal cannot. But two projects already call <code>document_plan</code>, berith from a script.</td>
+      <td><code>MCP_BOARD_PLAN_DOC</code>: <code>warn</code> (the default) records the plan and answers with what is missing; <code>require</code> refuses until the page passes; <code>off</code> is today&rsquo;s behaviour.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="decision">
+  <strong>Decided 22 Nov 2026: enforce at the tool, remind in the system prompt, and keep
+  <code>warn</code> as the default.</strong>
+  The role prompt still says it, but it is the weakest of the places, because it is the
+  only one a session can lose. With <code>warn</code>, xiliap and berith keep working
+  unchanged; <code>require</code> can be turned on one project at a time.
+</div>
+
+<!-- ======================================================= -->
+<h2 id="convention">The convention, as rules</h2>
+<p>
+  &ldquo;The format being used here&rdquo; is the shape of
+  <a href="../omlx/shared-model-host.html">shared-model-host.html</a>,
+  <a href="../omlx/cf-tunnel.html">cf-tunnel.html</a> and
+  <a href="../neovim/setup.html">setup.html</a>. berith&rsquo;s <code>docs/plan.html</code>
+  was written from the same request text. Each page started as a one-line request, and
+  the request is still at the top of the file, followed by what was measured and decided.
+  The markup differs from page to page, so the rules check features, not class names.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Rule</th><th>What the page has</th><th>How it is checked</th></tr></thead>
+  <tbody>
+    <tr><td class="nw"><span class="tag bad">E1</span> page</td><td>A doctype, and a <code>&lt;title&gt;</code> that names the plan.</td><td><code>&lt;!doctype html&gt;</code>, at most after the brief; a title of 4+ characters.</td></tr>
+    <tr><td class="nw"><span class="tag bad">E2</span> brief</td><td>A comment before <code>&lt;html&gt;</code> that keeps the request word for word, followed by dated lines: measured, DECIDED, BUILT, UPDATE.</td><td>The first comment before <code>&lt;html&gt;</code>, 40+ characters.</td></tr>
+    <tr><td class="nw"><span class="tag bad">E3</span> left panel</td><td>Contents.</td><td>A <code>&lt;nav&gt;</code> with 3+ <code>href="#&hellip;"</code> links, each to an id on the page.</td></tr>
+    <tr><td class="nw"><span class="tag bad">E4</span> right panel</td><td>At a glance: key facts, what is left, a legend.</td><td>An <code>&lt;aside&gt;</code> that does not hold that nav.</td></tr>
+    <tr><td class="nw"><span class="tag bad">E5</span> motion</td><td>Diagrams that move.</td><td>An inline <code>&lt;svg&gt;</code> with a <code>viewBox</code>, animated by <code>&lt;animate&hellip;&gt;</code> / <code>&lt;animateMotion&gt;</code>, or by CSS <code>@keyframes</code> used in <code>animation:</code>.</td></tr>
+    <tr><td class="nw"><span class="tag bad">E6</span> stillness</td><td>Motion stops for readers who ask for less.</td><td><code>prefers-reduced-motion</code> in the CSS.</td></tr>
+    <tr><td class="nw"><span class="tag unk">W1</span> themes</td><td>Light and dark.</td><td><code>prefers-color-scheme: dark</code></td></tr>
+    <tr><td class="nw"><span class="tag unk">W2</span> pause</td><td>A control that pauses the diagrams.</td><td>A button whose text says pause or play, or a call to <code>pauseAnimations()</code>.</td></tr>
+    <tr><td class="nw"><span class="tag unk">W3</span> labels</td><td>Every diagram says what it shows.</td><td>Each diagram has a <code>&lt;title&gt;</code> or <code>aria-label</code>.</td></tr>
+    <tr><td class="nw"><span class="tag unk">W4</span> both views</td><td>A data flow and a process.</td><td>Ids, <code>h2</code>/<code>h3</code> text and diagram labels contain &ldquo;flow&rdquo;, and one of process, phase, steps, order, roadmap, sequence.</td></tr>
+    <tr><td class="nw"><span class="tag unk">W5</span> one file</td><td>Self-contained.</td><td>No external <code>&lt;script src&gt;</code> or stylesheet.</td></tr>
+    <tr><td class="nw"><span class="tag unk">W6</span> dates</td><td>Absolute dates.</td><td>At least one date like &ldquo;22 Nov 2026&rdquo;.</td></tr>
+    <tr><td class="nw"><span class="tag unk">W7</span> moved</td><td>The page changed when the plan did.</td><td>On a replace, the steps differ but the page&rsquo;s sha256 is the one recorded last time.</td></tr>
+    <tr><td class="nw"><span class="tag unk">W8</span> agree</td><td>The page and the board describe the same steps.</td><td>Every step title on the board appears in the page&rsquo;s text.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Checked against the pages that exist</h3>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Rules</th><th>shared-model-host</th><th>cf-tunnel</th><th>neovim/setup</th><th>berith/plan</th></tr></thead>
+  <tbody>
+    <tr><td>E1&ndash;E6</td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td></tr>
+    <tr><td>W1&ndash;W4</td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td></tr>
+    <tr><td>W5 one file</td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td><td><span class="tag unk">warn</span> Google Fonts</td></tr>
+    <tr><td>W6 dates</td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td><td><span class="tag ok">pass</span></td><td><span class="tag unk">warn</span> none found</td></tr>
+    <tr><td>W7, W8</td><td colspan="4">Need a plan on the board; they run inside <code>document_plan</code>.</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  A chat-style page (an <code>h1</code> and nothing else) fails E2, E3, E4, E5 and E6.
+  The prototype was about 50 lines of regular expressions; P0 turns it into
+  <code>plandoc.mjs</code>, with this folder&rsquo;s pages as fixtures. The rules are a
+  floor. They tell a page that follows the convention from one that does not; they do not
+  judge whether the plan is any good.
+</p>
+
+<h3>The starter page</h3>
+<p>
+  <code>templates/plan.html</code> is this page&rsquo;s skeleton, taken from
+  <code>shared-model-host.html</code>: the colour tokens for light, dark and print; the
+  three-column shell that folds at 1240&nbsp;px and 860&nbsp;px; the scroll-spied contents
+  and progress bar; the pause button. It has section stubs for Summary, Data flow,
+  Process, Steps, Acceptance, Files and Open questions; right-panel cards for At a glance,
+  Still to do and Diagram legend; and two diagram skeletons, each with one moving token.
+  The tool fills in <code>{{TITLE}}</code>, <code>{{BRIEF}}</code>, <code>{{DATE}}</code>
+  and <code>{{LEDE}}</code>. Untouched, it passes every rule except W8, which needs the
+  real step titles.
+</p>
+
+<!-- ======================================================= -->
+<h2 id="forgets">Why the planner forgets</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 240" role="img" aria-labelledby="dM-t dM-d">
+  <title id="dM-t">Where the page rule lives in a planner session, over time</title>
+  <desc id="dM-d">A timeline of one planner session: session start, plan version 1, a /compact, plan version 2. Row one, the role prompt: present from the start until /compact, then summarized away; in projects with their own prompts it never held the rule. Row two, the server's instructions: present for the whole session, in the system prompt. Row three, document_plan's schema and description: read just before each call. Row four, the result of document_plan: a reminder after version 1, which had no page, and a pass after version 2.</desc>
+
+  <text x="10" y="42">role prompt</text>
+  <text class="sub" x="10" y="57">read once, if someone runs it</text>
+  <text x="10" y="90">server instructions</text>
+  <text class="sub" x="10" y="105">system prompt, every turn</text>
+  <text x="10" y="138">document_plan schema</text>
+  <text class="sub" x="10" y="153">fetched right before a call</text>
+  <text x="10" y="186">document_plan result</text>
+  <text class="sub" x="10" y="201">read right after a call</text>
+
+  <rect class="bar req" x="226" y="29" width="364" height="24" rx="4" />
+  <text class="sub" x="408" y="45" text-anchor="middle">the rule, if this project&rsquo;s prompt has it</text>
+  <rect class="bar gone" x="590" y="29" width="310" height="24" rx="4" />
+  <text class="sub" x="745" y="45" text-anchor="middle">summarized away</text>
+
+  <rect class="bar ok" x="226" y="77" width="674" height="24" rx="4" />
+  <text class="sub mono" x="563" y="93" text-anchor="middle">plan = HTML page &middot; plan_doc_template &middot; check_plan_doc &middot; doc</text>
+
+  <rect class="bar acc" x="386" y="125" width="28" height="24" rx="4" />
+  <rect class="bar acc" x="776" y="125" width="28" height="24" rx="4" />
+  <text class="sub" x="424" y="141">doc: the page&rsquo;s path</text>
+
+  <rect class="bar unk pulse" x="414" y="173" width="28" height="24" rx="4" />
+  <text class="sub" x="452" y="189">no page: what to do</text>
+  <rect class="bar ok" x="804" y="173" width="28" height="24" rx="4" />
+  <text class="sub" x="842" y="189">page ok</text>
+
+  <line class="compact pulse" x1="590" y1="22" x2="590" y2="206" />
+  <line class="axis" x1="226" y1="214" x2="900" y2="214" />
+  <line class="tick" x1="226" y1="209" x2="226" y2="219" />
+  <line class="tick" x1="400" y1="209" x2="400" y2="219" />
+  <line class="tick" x1="590" y1="209" x2="590" y2="219" />
+  <line class="tick" x1="790" y1="209" x2="790" y2="219" />
+  <text class="lbl" x="226" y="234">session start</text>
+  <text class="lbl" x="400" y="234" text-anchor="middle">plan v1</text>
+  <text class="lbl" x="590" y="234" text-anchor="middle">/compact</text>
+  <text class="lbl" x="790" y="234" text-anchor="middle">plan v2, after a follow-up</text>
+
+  <g class="cursor">
+    <line class="cursor" x1="226" y1="22" x2="226" y2="208" />
+    <animateTransform attributeName="transform" type="translate" from="0 0" to="674 0" dur="12s" repeatCount="indefinite" />
+  </g>
+</svg>
+<figcaption>
+  The blue line is &ldquo;now&rdquo;. Whatever lies under it is what the planner can see at
+  that moment. Before the <code>/compact</code> it may see the role prompt; after it, the
+  green row is the only standing reminder. The two short rows come and go with each call,
+  and they are what make the reminder happen at the moment it matters.
+</figcaption>
+</figure>
+<ul>
+  <li><strong>The role prompt says nothing about a page.</strong> <code>PLANNER.md</code> ends with &ldquo;Always call the board tools; do not only write the plan in chat.&rdquo; The page is never mentioned.</li>
+  <li><strong>A prompt is read once.</strong> It reaches the model only when someone runs <code>/mcp__board__planner</code>. Claude Code does not send it again; after <code>/compact</code> it survives only as far as the summary keeps it.</li>
+  <li><strong>Two projects never see the default prompt.</strong> <code>MCP_BOARD_PROMPTS</code> replaces the whole folder. xiliap reads <code>docs/lessons/agents/board</code>, berith reads <code>docs/board</code>, and neither mentions HTML.</li>
+  <li><strong>Server instructions stay.</strong> Claude Code puts each server&rsquo;s <code>initialize</code> instructions in the system prompt of every session that has the server; the session that wrote this page carries two such blocks. The board&rsquo;s instructions are one sentence about <code>get_board_summary</code> today.</li>
+  <li><strong>A tool description is read when it is needed.</strong> With many MCP tools, Claude Code defers their schemas and fetches one just before calling it, so <code>document_plan</code>&rsquo;s description is read right before a plan is recorded.</li>
+  <li><strong>The tool result has the last word.</strong> The model reads it right after acting. A reminder there is seen every time, and a refusal cannot be skipped.</li>
+</ul>
+
+<!-- ======================================================= -->
+<h2 id="flow">Data flow</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 410" role="img" aria-labelledby="dA-t dA-d">
+  <title id="dA-t">How a plan page travels between the sessions, the board and the repo</title>
+  <desc id="dA-d">Left: the planner session, and below it the orchestrator and validator. Middle, inside the mcp-board server: initialize sends the instructions to the planner; plan_doc_template reads templates/plan.html and writes a starter page into the project repo; document_plan, the gate, checks the page with plandoc.mjs, records the plan with its doc in board.json, or answers the planner with a refusal or a reminder. Right: the page docs/topic/slug.html, which the planner fills in. Bottom: the orchestrator and validator get the plan and its page path from the board, and check_plan_doc checks the page again.</desc>
+  <defs>
+    <marker id="dA-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+
+  <text class="lane" x="10" y="16">SESSIONS</text>
+  <text class="lane" x="274" y="16">MCP-BOARD SERVER</text>
+  <text class="lane" x="690" y="16">PROJECT REPO</text>
+  <rect class="group" x="262" y="36" width="392" height="362" rx="10" />
+
+  <!-- flows -->
+  <path class="flow res" d="M280,74 H192" marker-end="url(#dA-arrow)" />
+  <text class="lbl" x="236" y="66" text-anchor="middle">rule</text>
+  <path class="flow req" d="M190,100 H232 V148 H278" marker-end="url(#dA-arrow)" />
+  <path class="wire" d="M470,148 H452" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M365,176 V191 H672 V200 H688" marker-end="url(#dA-arrow)" />
+  <text class="lbl" x="560" y="186" text-anchor="middle">writes the starter page</text>
+  <path class="flow req" d="M100,48 V28 H800 V148" marker-end="url(#dA-arrow)" />
+  <text class="lbl" x="808" y="90">the planner</text>
+  <text class="lbl" x="808" y="104">fills it in</text>
+  <path class="flow req" d="M190,166 H250 V234 H278" marker-end="url(#dA-arrow)" />
+  <path class="wire" d="M450,234 H468" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M690,226 H664 V240 H640" marker-end="url(#dA-arrow)" />
+  <path class="flow bad" d="M280,256 H100 V181" marker-end="url(#dA-arrow)" />
+  <text class="lbl" x="190" y="272" text-anchor="middle">refused, or a reminder</text>
+  <path class="flow res" d="M365,262 V308" marker-end="url(#dA-arrow)" />
+  <path class="flow res" d="M280,338 H192" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M190,358 H230 V384 H554 V368" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M638,338 H800 V248" marker-end="url(#dA-arrow)" />
+  <text class="lbl" x="808" y="300">read by every role</text>
+
+  <!-- nodes -->
+  <g class="node acc"><rect x="10" y="48" width="180" height="130" rx="8" /><text x="100" y="86" text-anchor="middle">Planner</text><text class="sub" x="100" y="104" text-anchor="middle">Claude Code session</text><text class="sub" x="100" y="136" text-anchor="middle">its system prompt carries</text><text class="sub" x="100" y="152" text-anchor="middle">the board&rsquo;s page rule</text></g>
+  <g class="node"><rect x="10" y="300" width="180" height="70" rx="8" /><text x="100" y="328" text-anchor="middle">Orchestrator, Validator</text><text class="sub" x="100" y="346" text-anchor="middle">get_plan &rarr; doc</text></g>
+
+  <g class="node ok"><rect x="280" y="50" width="170" height="48" rx="8" /><text x="365" y="70" text-anchor="middle">initialize</text><text class="sub" x="365" y="87" text-anchor="middle">instructions name the page</text></g>
+  <g class="node"><rect x="280" y="120" width="170" height="56" rx="8" /><text class="mono" x="365" y="144" text-anchor="middle">plan_doc_template</text><text class="sub" x="365" y="162" text-anchor="middle">new file only</text></g>
+  <g class="node"><rect x="470" y="120" width="168" height="56" rx="8" /><text class="mono" x="554" y="144" text-anchor="middle">templates/plan.html</text><text class="sub" x="554" y="162" text-anchor="middle">passes the rules as is</text></g>
+  <g class="node acc"><rect x="280" y="206" width="170" height="56" rx="8" /><text class="mono" x="365" y="230" text-anchor="middle">document_plan {doc}</text><text class="sub" x="365" y="248" text-anchor="middle">the gate</text></g>
+  <g class="node ok"><rect x="470" y="206" width="168" height="56" rx="8" /><text class="mono" x="554" y="230" text-anchor="middle">plandoc.mjs</text><text class="sub" x="554" y="248" text-anchor="middle">E1&ndash;E6 must, W1&ndash;W8 should</text></g>
+  <g class="node"><rect x="280" y="310" width="170" height="56" rx="8" /><text class="mono" x="365" y="334" text-anchor="middle">board.json</text><text class="sub" x="365" y="352" text-anchor="middle">plan.doc: path, sha, result</text></g>
+  <g class="node ok"><rect x="470" y="310" width="168" height="56" rx="8" /><text class="mono" x="554" y="334" text-anchor="middle">check_plan_doc</text><text class="sub" x="554" y="352" text-anchor="middle">same rules, any time</text></g>
+
+  <g class="node unk"><rect x="690" y="150" width="220" height="96" rx="8" /><text class="mono" x="800" y="176" text-anchor="middle">docs/&lt;topic&gt;/&lt;slug&gt;.html</text><text class="sub" x="800" y="196" text-anchor="middle">brief &middot; left nav &middot; right panel</text><text class="sub" x="800" y="214" text-anchor="middle">animated flow and process</text><text class="sub" x="800" y="232" text-anchor="middle">what a person reads</text></g>
+
+  <!-- tokens -->
+  <circle class="packet res" r="4"><animateMotion dur="8s" repeatCount="indefinite" path="M365,74 H100" keyPoints="0;1;1" keyTimes="0;0.25;1" calcMode="linear" /></circle>
+  <circle class="packet req" r="5"><animateMotion dur="8s" begin="-6s" repeatCount="indefinite" path="M100,100 H232 V148 H365 V191 H672 V200 H800" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear" /></circle>
+  <circle class="packet req" r="5"><animateMotion dur="8s" begin="-4s" repeatCount="indefinite" path="M100,48 V28 H800 V198" keyPoints="0;1;1" keyTimes="0;0.5;1" calcMode="linear" /></circle>
+  <circle class="packet req" r="5"><animateMotion dur="8s" begin="-2s" repeatCount="indefinite" path="M100,166 H250 V234 H365 V338" keyPoints="0;1;1" keyTimes="0;0.45;1" calcMode="linear" /></circle>
+  <circle class="packet bad" r="4" opacity="0">
+    <animateMotion dur="8s" begin="-2s" repeatCount="indefinite" path="M365,256 H100 V150" keyPoints="0;0;1;1" keyTimes="0;0.5;0.8;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="8s" begin="-2s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.5;0.51;0.8;1" />
+  </circle>
+  <circle class="packet res" r="4"><animateMotion dur="8s" begin="-1s" repeatCount="indefinite" path="M365,338 H100" keyPoints="0;1;1" keyTimes="0;0.3;1" calcMode="linear" /></circle>
+  <circle class="packet req" r="5"><animateMotion dur="8s" begin="-5s" repeatCount="indefinite" path="M100,358 H230 V384 H554 V338 H800 V200" keyPoints="0;1;1" keyTimes="0;0.6;1" calcMode="linear" /></circle>
+</svg>
+<figcaption>
+  Blue tokens are calls and writes; green ones are the board answering; the red one is a
+  refusal (<code>require</code>) or a reminder (<code>warn</code>). The page is the only
+  thing in the repo the board touches, and only to create it: after that, the planner
+  edits it and the board only reads it, by hash and by rules.
+</figcaption>
+</figure>
+
+<!-- ======================================================= -->
+<h2 id="process">Process</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 310" role="img" aria-labelledby="dB-t dB-d">
+  <title id="dB-t">One plan, from the planner's first call to the next iteration</title>
+  <desc id="dB-d">Row one, the planner: get_board_summary shows which plans lack a page; plan_doc_template writes the starter page with the request in its brief; the planner fills in the page; check_plan_doc until there are no E errors; document_plan with doc, where the gate checks again. On failure, warn records the plan and says what is missing, require refuses and records nothing, and the planner goes back to the page. On a pass, row two: the plan's doc is recorded and the acceptance list gains the page; the orchestrator builds, reading the page from get_plan; the validator runs check_plan_doc and the acceptance; the next iteration edits the same page with a dated UPDATE line.</desc>
+  <defs>
+    <marker id="dB-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+  <text class="lane" x="10" y="20">EACH PLAN &mdash; THE PLANNER</text>
+  <text class="lane" x="10" y="226">AFTER THE GATE</text>
+
+  <path class="flow req" d="M174,65 H192" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M358,65 H376" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M542,65 H560" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M726,65 H744" marker-end="url(#dB-arrow)" />
+  <g class="node"><rect x="10" y="34" width="164" height="62" rx="8" /><text class="mono" x="92" y="60" text-anchor="middle">get_board_summary</text><text class="sub" x="92" y="78" text-anchor="middle">doc: missing, failing, behind</text></g>
+  <g class="node"><rect x="194" y="34" width="164" height="62" rx="8" /><text class="mono" x="276" y="60" text-anchor="middle">plan_doc_template</text><text class="sub" x="276" y="78" text-anchor="middle">the request, in the brief</text></g>
+  <g class="node acc"><rect x="378" y="34" width="164" height="62" rx="8" /><text x="460" y="60" text-anchor="middle">fill in the page</text><text class="sub" x="460" y="78" text-anchor="middle">flow, process, steps, files</text></g>
+  <g class="node ok"><rect x="562" y="34" width="164" height="62" rx="8" /><text class="mono" x="644" y="60" text-anchor="middle">check_plan_doc</text><text class="sub" x="644" y="78" text-anchor="middle">until no E errors</text></g>
+  <g class="node acc"><rect x="746" y="34" width="164" height="62" rx="8" /><text class="mono" x="828" y="60" text-anchor="middle">document_plan {doc}</text><text class="sub" x="828" y="78" text-anchor="middle">the gate checks again</text></g>
+
+  <path class="flow bad" d="M790,96 V128" marker-end="url(#dB-arrow)" />
+  <text class="lbl" x="782" y="118" text-anchor="end">fails</text>
+  <g class="node bad pulse"><rect x="560" y="130" width="260" height="48" rx="8" /><text x="690" y="150" text-anchor="middle">warn: recorded, with what is missing</text><text class="sub" x="690" y="166" text-anchor="middle">require: refused, nothing recorded</text></g>
+  <path class="flow bad" d="M560,154 H460 V100" marker-end="url(#dB-arrow)" />
+
+  <path class="flow res" d="M880,96 V208 H180 V230" marker-end="url(#dB-arrow)" />
+  <text class="lbl" x="874" y="150" text-anchor="end">passes</text>
+
+  <path class="flow req" d="M220,265 H241" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M453,265 H474" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M686,265 H698" marker-end="url(#dB-arrow)" />
+  <g class="node ok"><rect x="10" y="234" width="210" height="62" rx="8" /><text x="115" y="260" text-anchor="middle">plan.doc recorded</text><text class="sub" x="115" y="278" text-anchor="middle">acceptance gains: the page passes</text></g>
+  <g class="node"><rect x="243" y="234" width="210" height="62" rx="8" /><text x="348" y="260" text-anchor="middle">orchestrator builds</text><text class="sub" x="348" y="278" text-anchor="middle">reads the page from get_plan</text></g>
+  <g class="node ok"><rect x="476" y="234" width="210" height="62" rx="8" /><text x="581" y="260" text-anchor="middle">validator</text><text class="sub" x="581" y="278" text-anchor="middle">check_plan_doc and acceptance</text></g>
+  <g class="node acc"><rect x="700" y="234" width="210" height="62" rx="8" /><text x="805" y="260" text-anchor="middle">next iteration</text><text class="sub" x="805" y="278" text-anchor="middle">same page, dated UPDATE line</text></g>
+
+  <circle class="packet req" r="5">
+    <animateMotion dur="12s" repeatCount="indefinite" path="M92,65 H880 V208 H180 V265 H805" keyPoints="0;1;1" keyTimes="0;0.85;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="12s" repeatCount="indefinite" values="1;1;0;0" keyTimes="0;0.86;0.87;1" />
+  </circle>
+  <circle class="packet bad" r="4" opacity="0">
+    <animateMotion dur="12s" begin="-6s" repeatCount="indefinite" path="M790,96 V154 H460 V96" keyPoints="0;0;1;1" keyTimes="0;0.4;0.7;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="12s" begin="-6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.4;0.41;0.7;1" />
+  </circle>
+</svg>
+<figcaption>
+  The red loop is the reminder doing its work: whatever the mode, a page that fails sends
+  the planner back to the page, not on to the orchestrator. In <code>warn</code> the plan is
+  already on the board while that happens, so the orchestrator can start; in
+  <code>require</code> it is not.
+</figcaption>
+</figure>
+
+<!-- ======================================================= -->
+<h2 id="change">The change</h2>
+
+<h3 id="gate">The gate: document_plan</h3>
+<pre><code>document_plan
+  title, goal, steps[], acceptance[], plan_id, metadata        <span class="cm"># as today</span>
+<span class="add">+ doc    string   the plan's page, docs/&lt;topic&gt;/&lt;slug&gt;.html, relative to the docs root</span></code></pre>
+
+<div class="table-wrap">
+<table>
+  <thead><tr><th><code>MCP_BOARD_PLAN_DOC</code></th><th>No <code>doc</code>, or a page with E errors</th><th>A page that passes</th></tr></thead>
+  <tbody>
+    <tr><td><code>off</code></td><td>Recorded, as today.</td><td>Recorded; <code>doc</code> kept, not checked.</td></tr>
+    <tr><td><code>warn</code> <span class="tag acc">default</span></td><td>Recorded. The result has <code>plan_doc</code> with the status, the errors, and the next thing to do.</td><td>Recorded. <code>plan_doc.status</code> is <code>ok</code>; warnings are listed.</td></tr>
+    <tr><td><code>require</code></td><td>Refused, nothing recorded. The error names each failed rule.</td><td>Recorded.</td></tr>
+  </tbody>
+</table>
+</div>
+<ul>
+  <li><strong>The validator remembers through the plan.</strong> When a plan has a page, passing or not, <code>document_plan</code> appends one acceptance item, once: <em>&ldquo;plan page docs/&hellip;.html passes check_plan_doc and says what was built&rdquo;</em>. <span class="tag acc">built this way</span> The plan said &ldquo;when a page passes&rdquo;; a failing page is the one the validator most needs to see.</li>
+  <li><strong>Replacing a plan</strong> without <code>doc</code> keeps the old <code>doc</code> and checks it again. If the steps changed and the page did not, that is W7.</li>
+  <li><strong>After validation</strong>, <code>submit_validation</code> keeps the page&rsquo;s sha256. <code>get_board_summary</code> marks a <code>done</code> plan&rsquo;s page <code>behind</code> while it still has that hash, because nobody has written down what was verified.</li>
+  <li><strong>The docs root</strong> is <code>MCP_BOARD_DOCS_ROOT</code>, else <code>MCP_BOARD_HOOK_CWD</code>, else the server&rsquo;s working directory. <code>get_board_summary</code> prints it, so a wrong root shows at once.</li>
+</ul>
+
+<h4>Answers, by mode</h4>
+<pre><code><span class="cm">// warn, no doc: recorded, and told what to do</span>
+{
+  "plan_id": "plan_3f9a1c2e",
+  "plan": { "...": "..." },
+  "plan_doc": {
+    "status": "missing",
+    "mode": "warn",
+    "next": "Write this plan as a page: plan_doc_template {path: \"docs/&lt;topic&gt;/&lt;slug&gt;.html\", title, brief}, fill it in, check_plan_doc, then document_plan again with plan_id and doc."
+  }
+}
+
+<span class="cm">// require, page fails: refused</span>
+{ "error": "plan page required (MCP_BOARD_PLAN_DOC=require): docs/auth/login.html: E4 no right panel (an &lt;aside&gt; outside the contents nav); E5 no diagram motion. Nothing was recorded." }
+
+<span class="cm">// what the plan keeps</span>
+"doc": {
+  "path": "docs/auth/login.html",
+  "sha256": "9b1e&hellip;",
+  "checked_at": "2026-11-22T21:04:11.512Z",
+  "errors": [],
+  "warnings": ["W6 no absolute date such as 22 Nov 2026"]
+}</code></pre>
+
+<h3 id="tools">New tools and a prompt</h3>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Name</th><th>Arguments</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>plan_doc_template</code></td><td><code>path</code>, <code>title</code>, <code>brief</code>, <code>lede</code>?</td><td>Writes <code>templates/plan.html</code>, filled in, to <code>path</code>. Refuses a file that exists, a path outside the docs root, or a name not ending in <code>.html</code>. Returns the path and the rules. A <code>--</code> in the brief is written as <code>- -</code> so it cannot end the comment.</td></tr>
+    <tr><td><code>check_plan_doc</code></td><td><code>path</code> or <code>plan_id</code></td><td>Runs the rules. Returns <code>ok</code>, <code>errors</code>, <code>warnings</code> and <code>facts</code> (title, sections, diagrams, animated, bytes). Read-only.</td></tr>
+    <tr><td>prompt <code>plan_doc</code></td><td></td><td>The convention in words, from <code>conventions/PLAN_DOC.md</code> inside mcp-board. Served even when <code>MCP_BOARD_PROMPTS</code> points elsewhere; a <code>PLAN_DOC.md</code> in the project&rsquo;s folder replaces it. In Claude Code: <code>/mcp__board__plan_doc</code>.</td></tr>
+    <tr><td><code>cli.mjs</code></td><td><code>check-doc PATH</code>, <code>new-doc PATH TITLE</code></td><td>The same two things from a shell or a justfile. <code>check-doc</code> exits 1 on an E error.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3 id="reads">What each session reads</h3>
+<h4>The server&rsquo;s instructions (system prompt, every session)</h4>
+<pre><code>A shared board for planner, orchestrator and validator sessions. Call get_board_summary at the
+start of a session and after every event; report through the tools, not only in chat.
+<span class="add">Planner: every plan is also an HTML page, docs/&lt;topic&gt;/&lt;slug&gt;.html, in this project's
+convention: the request verbatim in a leading comment, a left contents nav, a right
+at-a-glance panel, animated data-flow and process diagrams. Start it with plan_doc_template,
+check it with check_plan_doc, and pass its path as doc to document_plan. Prompt plan_doc has
+the details. Orchestrator and validator: get_plan gives the page; read it.</span></code></pre>
+
+<h4><code>document_plan</code>&rsquo;s description (read right before the call)</h4>
+<pre><code>Planner: create or replace a structured implementation plan. Returns plan_id. Call this before any
+implementation work. Replacing a plan keeps the status of every step whose id is unchanged.
+<span class="add">Every plan has a page: pass doc, the path of its HTML page (plan_doc_template writes a starter;
+check_plan_doc checks it). Without a passing page this tool warns, or refuses when the board
+requires pages.</span></code></pre>
+
+<h4><code>prompts/PLANNER.md</code>, a new section</h4>
+<pre><code>## Plan page
+Every plan is also a page: docs/&lt;topic&gt;/&lt;slug&gt;.html, in this project's convention (prompt plan_doc).
+1. plan_doc_template {path, title, brief}. The brief starts with the request, word for word.
+2. Fill it in: summary, data flow and process diagrams, steps, acceptance, files, open questions.
+   The board's steps are the page's steps, with the same titles.
+3. check_plan_doc {path} until it has no errors.
+4. document_plan {..., doc: path}.
+On the next iteration, edit the same page first (a dated UPDATE line in the brief), then
+document_plan {plan_id, ...}. When a plan is done, write what was verified into its page.</code></pre>
+<p>
+  <code>VALIDATOR.md</code> gains one rule: <em>&ldquo;check_plan_doc {plan_id}; an E
+  error fails validation, and the page&rsquo;s status tags must match what you
+  found.&rdquo;</em> <code>ORCHESTRATOR.md</code> gains one: <em>&ldquo;get_plan gives
+  doc; read the page before you start. Don&rsquo;t edit it: put what it should say in
+  report_progress evidence.&rdquo;</em>
+</p>
+<p>
+  <code>get_board_summary</code> gains <code>docs_root</code> and
+  <code>plan_doc_mode</code> at the top, and each plan gains
+  <code>page: {path, status, changed, errors, warnings}</code>, checked as it is now, where
+  status is one of <code>ok</code>, <code>missing</code>, <code>failing</code> or
+  <code>behind</code>, and <code>changed</code> says it was edited since
+  <code>document_plan</code> checked it. <code>get_plan</code> returns the same
+  <code>page</code>; <code>list_plans</code> shows <code>doc</code> and the status.
+  <span class="tag acc">built this way</span> The plan called the live view
+  <code>doc</code>, the same name as the stored record; it is <code>page</code> so the two
+  don&rsquo;t collide.
+</p>
+
+<!-- ======================================================= -->
+<h2 id="phases">Phases</h2>
+
+<div class="phase">
+  <h4><span class="tag">P0</span> The rules as code <span class="tag ok">done</span></h4>
+  <p class="status">Built 22 Nov 2026. 0 errors on the four pages in <code>docs/</code> and on berith&rsquo;s, which gets W5 and W6; a chat-style page fails E2&ndash;E6; the starter page has no errors and no warnings.</p>
+  <ul>
+    <li><code>plandoc.mjs</code>: <code>checkPlanDoc(html, {steps, previousSha})</code> &rarr; <code>{errors, warnings, facts}</code>, rules E1&ndash;E6 and W1&ndash;W8 as in the table. No dependencies.</li>
+    <li><code>templates/plan.html</code> with the four placeholders; <code>renderTemplate({title, brief, date, lede})</code>.</li>
+    <li><code>node cli.mjs check-doc PATH</code>.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> <code>check-doc</code> gives 0 errors on the three pages in <code>docs/</code> and on berith&rsquo;s <code>docs/plan.html</code> (W5 and W6 warnings there); a chat-style page fails E2&ndash;E6; a rendered template has 0 errors and no warnings but W8.</p>
+</div>
+
+<div class="phase">
+  <h4><span class="tag">P1</span> The gate <span class="tag ok">done</span></h4>
+  <p class="status">Built 22 Nov 2026; smoke cases 6&ndash;11 pass, and the cases from 1.1.0 pass unchanged.</p>
+  <ul>
+    <li><code>document_plan</code> takes <code>doc</code>; the three modes; <code>plan.doc</code> on the record; the acceptance item, added once.</li>
+    <li>W7 against the last recorded hash; W8 against the step titles.</li>
+    <li><code>submit_validation</code> keeps the page hash; <code>get_plan</code>, <code>list_plans</code> and <code>get_board_summary</code> show <code>doc</code> and its status. Reads still never write the board.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> smoke cases 6&ndash;11 below pass, and the existing smoke cases pass unchanged with the default mode.</p>
+</div>
+
+<div class="phase">
+  <h4><span class="tag">P2</span> Tools and the prompt <span class="tag ok">done</span></h4>
+  <p class="status">Built 22 Nov 2026; smoke cases 2&ndash;5 pass. The prompt lists the rules from <code>plandoc.mjs</code>, so the two cannot drift.</p>
+  <ul>
+    <li><code>plan_doc_template</code> and <code>check_plan_doc</code> in <code>TOOLS</code> and the handlers.</li>
+    <li><code>conventions/PLAN_DOC.md</code>, served as prompt <code>plan_doc</code> alongside the role prompts, wherever those come from.</li>
+    <li><code>node cli.mjs new-doc PATH TITLE</code>.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> smoke cases 2&ndash;5 pass.</p>
+</div>
+
+<div class="phase">
+  <h4><span class="tag">P3</span> Remembering <span class="tag ok">done</span></h4>
+  <p class="status">Built and verified 22 Nov 2026, both checks below, with a headless Claude Code session (see <a href="#verified">What is verified</a>).</p>
+  <ul>
+    <li>The new server instructions and <code>document_plan</code> description, as drafted above. Keep the instructions short, and check whether Claude Code shortens long server instructions.</li>
+    <li>The three role prompts in <code>prompts/</code>.</li>
+  </ul>
+  <p class="done-when"><strong>Done when</strong>, by hand, in a scratch project with the board: (1) a new Claude Code session that never runs <code>/mcp__board__planner</code>, asked only to &ldquo;plan X on the board&rdquo;, writes a page and passes <code>doc</code> on its first <code>document_plan</code>; (2) after <code>/compact</code>, a follow-up iteration edits the same page and passes it again. Both written into this page under a new &ldquo;What is verified&rdquo;.</p>
+</div>
+
+<div class="phase">
+  <h4><span class="tag">P4</span> Docs and release <span class="tag ok">done</span></h4>
+  <p class="status">Built 22 Nov 2026: README, 1.2.0. The live boards of xiliap and berith read cleanly with the new code (read-only); their sessions pick it up when they restart.</p>
+  <ul>
+    <li><code>README.md</code>: a &ldquo;Plan pages&rdquo; section, the two env variables, the two tools, &ldquo;Changes in 1.2.0&rdquo;.</li>
+    <li>Version 1.2.0 in <code>package.json</code> and <code>SERVER_INFO</code>.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> <code>npm test</code> passes, and <code>claude mcp list</code> shows the board connected in xiliap and berith after a restart, with their plans readable.</p>
+</div>
+
+<div class="phase">
+  <h4><span class="tag">P5</span> Each project, when you choose <span class="tag unk">yours</span></h4>
+  <ul>
+    <li>Add one line to the project&rsquo;s own <code>PLANNER.md</code> pointing at prompt <code>plan_doc</code>; the instructions already cover it, the line only makes it explicit.</li>
+    <li>Set <code>MCP_BOARD_PLAN_DOC=require</code> in its <code>claude mcp add</code> env once its planner has written one passing page.</li>
+    <li>berith: decide how batches map to pages (see open questions) before turning on <code>require</code>, because <code>just board-plan</code> calls <code>document_plan</code> from a script.</li>
+  </ul>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="testing">Testing</h2>
+<p>All in <code>smoke.mjs</code>, on a temp board and a temp docs root, over stdio as today.</p>
+<ol class="steps">
+  <li><code>initialize</code>&rsquo;s instructions mention <code>plan_doc_template</code> and <code>doc</code>.</li>
+  <li><code>prompts/list</code> has <code>plan_doc</code>, including with <code>MCP_BOARD_PROMPTS</code> pointed at a folder that lacks it.</li>
+  <li><code>plan_doc_template</code> writes a page; a second call to the same path is refused; <code>../x.html</code> is refused; a brief containing <code>--&gt;</code> does not break the page.</li>
+  <li><code>check_plan_doc</code> on the fresh page: no errors.</li>
+  <li><code>check_plan_doc</code> on a chat-style page: E2, E3, E4, E5, E6.</li>
+  <li><code>warn</code>: <code>document_plan</code> without <code>doc</code> is recorded, with <code>plan_doc.status</code> <code>missing</code> and a <code>next</code>.</li>
+  <li><code>warn</code>: a failing page is recorded; <code>get_board_summary</code> shows it <code>failing</code>.</li>
+  <li><code>require</code> (a second server): no <code>doc</code> is refused and <code>board.json</code> is unchanged; a passing page is recorded, and its acceptance item appears once after two replaces.</li>
+  <li>Replace with new steps and the same page: W7. A step title missing from the page: W8.</li>
+  <li><code>submit_validation</code>, then the summary shows <code>behind</code>; edit the page and it does not.</li>
+  <li><code>get_board_summary</code> still leaves <code>board.json</code>&rsquo;s mtime alone.</li>
+  <li>Fixtures: <code>check-doc</code> on every <code>docs/**/*.html</code> beside mcp-board, when there are any, gives 0 errors. This page is one of them.</li>
+</ol>
+
+<!-- ======================================================= -->
+<h2 id="verified">What is verified</h2>
+<div class="phase">
+  <p class="status"><em>Verified 22 Nov 2026, on the Mac Studio (Node 26.13.1, Claude Code 2.1.330):</em></p>
+  <ul>
+    <li><strong>The smoke test</strong> (<code>npm test</code>) passes in under a second: the cases from 1.1.0 unchanged, the twelve new ones, and a second server in <code>require</code> mode with a prompts folder of its own. It fails when it should: with <code>prefers-reduced-motion</code> taken out of the template, it stops at case 4 on E6.</li>
+    <li><strong>The rules against real pages</strong>: <code>cli.mjs check-doc</code> gives 0 errors on the four pages in <code>docs/</code>, this one included, and on berith&rsquo;s <code>docs/plan.html</code>, which gets W5 (Google Fonts) and W6 (no date). A bare page gets E1&ndash;E6.</li>
+    <li><strong>Modes</strong>: <code>off</code> keeps <code>doc</code> without checking it and adds nothing to the result; an unknown value falls back to <code>warn</code>, and <code>get_board_summary</code> says so in <code>plan_doc_mode_problem</code>.</li>
+    <li><strong>The boards in use</strong>: <code>get_board_summary</code>, run with xiliap&rsquo;s and berith&rsquo;s own environment, reads both boards cleanly; their three plans show <code>page: missing</code>, and neither <code>board.json</code> changed. Their scripts (<code>board.mjs</code>, <code>board.py</code>) pass the CLI&rsquo;s output through and check only its exit status, which stays 0 under <code>warn</code>.</li>
+    <li><strong>The planner remembers without its prompt.</strong> A headless Claude Code session in a scratch git repo, with the board as its only MCP server, no user settings, and never given <code>/mcp__board__planner</code>, was asked only: <em>&ldquo;Plan, on the board, adding a --name flag to hello.mjs so it greets that name instead of the world. Only plan; don&rsquo;t implement it.&rdquo;</em> Its first call loaded <code>plan_doc_template</code> and <code>check_plan_doc</code> with <code>document_plan</code>. It wrote <code>docs/hello/name-flag.html</code> from the template, filled in every section (the request in the brief, measured and DECIDED lines, real diagrams, the plan_id in the right panel), checked it, and passed <code>doc</code> on its first <code>document_plan</code>: <code>plan_doc.status</code> <code>ok</code>, no warnings. 22 turns, 78&nbsp;s. The docs root defaulted to the session&rsquo;s project folder, because Claude Code starts the server there.</li>
+    <li><strong>And after <code>/compact</code>.</strong> The same session, compacted, then given &ldquo;Follow-up from review: also accept -n as a short form of --name. Do the next iteration of the plan on the board.&rdquo;, read the plan and its page, added <em>&ldquo;UPDATE 22 Nov 2026 (iteration 2, from review)&rdquo;</em> with a DECIDED line to the brief, revised the page, and called <code>document_plan</code> with the same plan_id: page kept, <code>ok</code>, no warnings.</li>
+  </ul>
+  <p class="done-when"><strong>Not verified:</strong> a session in <code>require</code> mode in a real project (only in the smoke test); xiliap&rsquo;s and berith&rsquo;s sessions after a restart onto 1.2.0; whether Claude Code shortens longer server instructions (these are 611 characters in <code>warn</code> mode, and the session acted on them; their exact text in its system prompt was not inspected).</p>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="risks">Compatibility and risks</h2>
+<ul>
+  <li><strong>xiliap and berith keep working.</strong> With <code>warn</code> as the default, their <code>document_plan</code> calls still succeed; the results gain a <code>plan_doc</code> field. Their hooks are not asked about <code>document_plan</code>, today or after.</li>
+  <li><strong>berith plans in batches.</strong> <code>just board-plan D10</code> makes a plan from a stretch of <code>docs/handoff.md</code>, while its one page, <code>docs/plan.html</code>, covers the whole app. Pointing every batch at that page passes E1&ndash;E6 but trips W8. How batches map to pages is berith&rsquo;s choice.</li>
+  <li><strong>Regular expressions, not a DOM.</strong> A page can satisfy the rules and still be thin (an empty <code>&lt;nav&gt;</code> with three links passes E3). The check is a floor; the validator still reads the page.</li>
+  <li><strong>The server writes one kind of file.</strong> <code>plan_doc_template</code> creates new <code>.html</code> files under the docs root and nothing else. It never overwrites.</li>
+  <li><strong>Reads touch the pages.</strong> <code>get_board_summary</code> hashes each active plan&rsquo;s page. The pages here are 50&ndash;230&nbsp;KB, a few milliseconds each. It still never writes the board.</li>
+  <li><strong>Instruction length.</strong> Server instructions share the system prompt with every other server&rsquo;s. Five sentences is the budget.</li>
+  <li><strong>The template copies this repo&rsquo;s CSS.</strong> If the convention changes, <code>templates/plan.html</code> and <code>PLAN_DOC.md</code> change with it, and the fixtures catch a rule that no longer fits.</li>
+</ul>
+
+<!-- ======================================================= -->
+<h2 id="alternatives">Alternatives considered</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Option</th><th>Reaches</th><th>Survives <code>/compact</code></th><th>Checks the page</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td>Edit <code>prompts/PLANNER.md</code> only</td><td>Sessions that run the default prompt</td><td><span class="tag bad">no</span></td><td><span class="tag bad">no</span></td><td>Part of the plan, not enough alone.</td></tr>
+    <tr><td>A line in each project&rsquo;s <code>CLAUDE.md</code></td><td>That project</td><td><span class="tag ok">yes</span></td><td><span class="tag bad">no</span></td><td>Fine as a supplement; repeated per project, and nothing checks it.</td></tr>
+    <tr><td>A Claude Code <code>PreToolUse</code> hook on <code>mcp__board__document_plan</code></td><td>That user&rsquo;s Claude Code</td><td><span class="tag ok">yes</span></td><td><span class="tag unk">if it copies the check</span></td><td>Duplicates the rules outside the board; other MCP clients miss it.</td></tr>
+    <tr><td><code>MCP_BOARD_HOOK</code> extended to <code>document_plan</code></td><td>Projects that write a hook</td><td><span class="tag ok">yes</span></td><td><span class="tag unk">each project writes its own</span></td><td>Worth adding later for project rules (open question), not as the convention&rsquo;s home.</td></tr>
+    <tr><td><strong>In the server: instructions, gate, template, check</strong></td><td>Every client of the board</td><td><span class="tag ok">yes</span></td><td><span class="tag ok">yes</span></td><td><span class="tag acc">recommended</span> One place.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="files">Files</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Path</th><th>State</th><th>Phase</th></tr></thead>
+  <tbody>
+    <tr><td><code>mcp-board/plandoc.mjs</code></td><td><span class="tag ok">new</span> the rules, the docs root, the template renderer and writer</td><td>P0</td></tr>
+    <tr><td><code>mcp-board/templates/plan.html</code></td><td><span class="tag ok">new</span> the starter page</td><td>P0</td></tr>
+    <tr><td><code>mcp-board/conventions/PLAN_DOC.md</code></td><td><span class="tag ok">new</span> the convention in words; prompt <code>plan_doc</code>, with the rules filled in from <code>plandoc.mjs</code></td><td>P2</td></tr>
+    <tr><td><code>mcp-board/tools.mjs</code></td><td><span class="tag ok">changed</span> <code>document_plan.doc</code>, the modes, two tools, <code>page</code> in reads, the hash on validation</td><td>P1, P2</td></tr>
+    <tr><td><code>mcp-board/server.mjs</code></td><td><span class="tag ok">changed</span> instructions, the built-in prompt, version</td><td>P2, P3</td></tr>
+    <tr><td><code>mcp-board/cli.mjs</code></td><td><span class="tag ok">changed</span> <code>check-doc</code>, <code>new-doc</code></td><td>P0, P2</td></tr>
+    <tr><td><code>mcp-board/prompts/*.md</code></td><td><span class="tag ok">changed</span> the page section and two rules</td><td>P3</td></tr>
+    <tr><td><code>mcp-board/smoke.mjs</code></td><td><span class="tag ok">changed</span> the twelve cases; a second server in <code>require</code> mode</td><td>P1&ndash;P3</td></tr>
+    <tr><td><code>mcp-board/README.md</code>, <code>package.json</code></td><td><span class="tag ok">changed</span> a Plan pages section, env, 1.2.0</td><td>P4</td></tr>
+    <tr><td><code>docs/mcp-board/plan-pages.html</code></td><td><span class="tag ok">this page</span> and the first fixture</td><td></td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="open">Open questions</h2>
+<ul>
+  <li><strong>Default mode.</strong> <span class="tag ok">decided 22 Nov 2026</span> <code>warn</code> everywhere.</li>
+  <li><strong>berith&rsquo;s batches.</strong> A page per batch, or <code>docs/plan.html</code> for all of them with W8 off for that project?</li>
+  <li><strong>The hook and <code>document_plan</code>.</strong> Should the project hook see <code>document_plan</code> too, so a project can refuse a plan by its own rules?</li>
+  <li><strong>Who writes &ldquo;What is verified&rdquo;.</strong> The planner, from the validation record (proposed), or the orchestrator, which knows the details first?</li>
+  <li><strong>External fonts.</strong> berith&rsquo;s page loads Google Fonts. Keep W5 a warning, or make the page fully self-contained an error?</li>
+</ul>
+
+</main>
+
+<!-- ================= RIGHT: at a glance ================= -->
+<aside class="rail right" aria-label="At a glance">
+  <h2>At a glance</h2>
+
+  <div class="card">
+    <h3>The change</h3>
+    <dl>
+      <dt>Version</dt><dd>1.1.0 &rarr; 1.2.0</dd>
+      <dt>Page</dt><dd><code>docs/&lt;topic&gt;/&lt;slug&gt;.html</code></dd>
+      <dt>Gate</dt><dd><code>MCP_BOARD_PLAN_DOC</code></dd>
+      <dt>Default</dt><dd><code>warn</code></dd>
+      <dt>Root</dt><dd><code>MCP_BOARD_DOCS_ROOT</code></dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>New <span class="tag ok">built</span></h3>
+    <dl>
+      <dt>Tools</dt><dd><code>plan_doc_template</code>, <code>check_plan_doc</code></dd>
+      <dt>Arg</dt><dd><code>document_plan.doc</code></dd>
+      <dt>Prompt</dt><dd><code>plan_doc</code></dd>
+      <dt>CLI</dt><dd><code>check-doc</code>, <code>new-doc</code></dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>The rules</h3>
+    <dl>
+      <dt>E1</dt><dd>doctype, title</dd>
+      <dt>E2</dt><dd>the request, in a comment</dd>
+      <dt>E3</dt><dd>left contents nav</dd>
+      <dt>E4</dt><dd>right panel</dd>
+      <dt>E5</dt><dd>a diagram that moves</dd>
+      <dt>E6</dt><dd>reduced motion</dd>
+      <dt>W1&ndash;8</dt><dd>dark, pause, labels, flow + process, one file, dates, moved, agree</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Who uses the board</h3>
+    <dl>
+      <dt>xiliap</dt><dd>own prompts, own hook</dd>
+      <dt>berith</dt><dd>own prompts, own hook; plans from <code>handoff.md</code></dd>
+    </dl>
+    <p class="small">Neither prompt folder mentions HTML, so the rule has to come from the server.</p>
+  </div>
+
+  <div class="card">
+    <h3>Still yours to decide</h3>
+    <ul>
+      <li>commit</li>
+      <li>berith: page per batch?</li>
+      <li>hook on <code>document_plan</code>?</li>
+      <li>W5 warning or error</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Diagram legend</h3>
+    <div class="legend">
+      <span><i class="swatch" style="background: var(--req)"></i>a call, a write, a step</span>
+      <span><i class="swatch" style="background: var(--res)"></i>the board answers; standing rule</span>
+      <span><i class="swatch" style="background: var(--bad)"></i>refused, reminded, lost</span>
+      <span><i class="swatch" style="background: var(--unk)"></i>the page in the repo</span>
+      <span><i class="swatch" style="background: var(--ok)"></i>a check</span>
+    </div>
+  </div>
+</aside>
+
+</div>
+
+<script>
+  (() => {
+    const links = new Map(
+      [...document.querySelectorAll('.left nav a[href^="#"]')].map((a) => [a.getAttribute("href").slice(1), a]),
+    );
+    const targets = [...links.keys()].map((id) => document.getElementById(id)).filter(Boolean);
+    let current = null;
+    const mark = (id) => {
+      if (id === current) return;
+      current = id;
+      links.forEach((a, key) => a.setAttribute("aria-current", String(key === id)));
+    };
+    const spy = () => {
+      const line = window.innerHeight * 0.25;
+      let active = targets[0];
+      for (const t of targets) if (t.getBoundingClientRect().top <= line) active = t;
+      if (active) mark(active.id);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      document.getElementById("progress").style.transform = `scaleX(${max > 0 ? window.scrollY / max : 0})`;
+    };
+    addEventListener("scroll", spy, { passive: true });
+    addEventListener("resize", spy);
+    spy();
+
+    const btn = document.getElementById("anim-toggle");
+    const svgs = [...document.querySelectorAll("svg.anim")];
+    const setPaused = (paused) => {
+      document.body.classList.toggle("paused", paused);
+      svgs.forEach((s) => (paused ? s.pauseAnimations() : s.unpauseAnimations()));
+      btn.setAttribute("aria-pressed", String(paused));
+      btn.textContent = paused ? "Play diagrams" : "Pause diagrams";
+    };
+    btn.addEventListener("click", () => setPaused(btn.getAttribute("aria-pressed") !== "true"));
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) setPaused(true);
+  })();
+</script>
+</body>
+</html>

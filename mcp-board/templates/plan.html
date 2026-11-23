@@ -1,0 +1,470 @@
+<!--
+{{BRIEF}}
+- planned {{DATE}}: started from mcp-board's plan_doc_template. Add dated lines below as the plan
+  moves: what was measured and how, DECIDED, BUILT, UPDATE. Newest last.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{{TITLE}} &middot; Implementation plan</title>
+<meta name="description" content="{{LEDE}}" />
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #57606a;
+    --accent: #2563eb;
+    --border: #d8dee4;
+    --code-bg: #f5f7fa;
+    --head-bg: #f0f3f6;
+    --panel: #ffffff;
+    --warn: #9a3412;
+    --warn-bg: #fff7ed;
+    --ok: #15803d;
+    --ok-bg: #f0fdf4;
+    --bad: #b91c1c;
+    --bad-bg: #fef2f2;
+    --unk: #a16207;
+    --unk-bg: #fefce8;
+    --req: #2563eb;
+    --res: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --accent: #6ea8fe;
+      --border: #30363d;
+      --code-bg: #161b22;
+      --head-bg: #161b22;
+      --panel: #11161d;
+      --warn: #fdba74;
+      --warn-bg: #2a1c0f;
+      --ok: #86efac;
+      --ok-bg: #10231a;
+      --bad: #fca5a5;
+      --bad-bg: #2a1215;
+      --unk: #fde68a;
+      --unk-bg: #2a2410;
+      --req: #6ea8fe;
+      --res: #86efac;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .progress {
+    position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 10;
+    background: var(--accent); transform-origin: 0 50%; transform: scaleX(0);
+  }
+  .shell {
+    display: grid;
+    grid-template-columns: 15rem minmax(0, 1fr) 17.5rem;
+    gap: 2.75rem;
+    max-width: 94rem;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 6rem;
+  }
+  .rail { position: sticky; top: 1.5rem; align-self: start; max-height: calc(100vh - 3rem); overflow-y: auto; font-size: .88em; }
+  .rail h2 { font-size: .74em; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); border: 0; margin: 0 0 .7em; padding: 0; }
+  .left nav ol { list-style: none; margin: 0; padding: 0; counter-reset: sec; }
+  .left nav > ol > li { counter-increment: sec; }
+  .left nav a {
+    display: block; padding: .28em .7em; margin: 1px 0;
+    color: var(--muted); text-decoration: none;
+    border-left: 2px solid var(--border); line-height: 1.4;
+    transition: color .2s ease, border-color .2s ease, background .2s ease;
+  }
+  .left nav > ol > li > a::before { content: counter(sec) ". "; font-variant-numeric: tabular-nums; }
+  .left nav ol ol a { padding-left: 1.6em; font-size: .94em; }
+  .left nav a:hover { color: var(--fg); }
+  .left nav a[aria-current="true"] { color: var(--accent); border-left-color: var(--accent); background: var(--code-bg); font-weight: 600; }
+  .rail-tools { margin-top: 1.4em; padding-top: 1em; border-top: 1px solid var(--border); }
+  .rail-tools button {
+    font: inherit; font-size: .95em; cursor: pointer; width: 100%;
+    color: var(--fg); background: var(--code-bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: .45em .7em;
+  }
+  .rail-tools button:hover { border-color: var(--accent); }
+  .rail-tools p { margin: .5em 0 0; color: var(--muted); font-size: .9em; line-height: 1.45; }
+  .right .card { border: 1px solid var(--border); border-radius: 8px; padding: .8em .95em; margin: 0 0 1em; background: var(--panel); }
+  .right .card h3 { font-size: .98em; margin: 0 0 .35em; }
+  .right dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .2em .7em; line-height: 1.45; }
+  .right dt { color: var(--muted); }
+  .right dd { margin: 0; overflow-wrap: anywhere; }
+  .right ul { margin: .2em 0; padding-left: 1.1em; line-height: 1.45; }
+  .right li { margin: .25em 0; overflow-wrap: anywhere; }
+  .right code { font-size: .86em; }
+  .legend { display: grid; gap: .35em; }
+  .legend span { display: inline-flex; align-items: center; gap: .5em; }
+  .swatch { width: 1.6em; height: .7em; border-radius: 3px; display: inline-block; flex: none; }
+  main { min-width: 0; }
+  h1, h2, h3, h4 { line-height: 1.25; font-weight: 650; }
+  h1 { font-size: 2.05em; margin: 0 0 .3em; }
+  main h2 { font-size: 1.42em; margin: 2.6em 0 .6em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+  main h3 { font-size: 1.12em; margin: 1.9em 0 .5em; }
+  h4 { font-size: .98em; margin: 1.4em 0 .4em; color: var(--muted); }
+  p, li { margin: .5em 0; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .12em .38em; border-radius: 4px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1em 1.2em; overflow-x: auto; font-size: .84em; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  pre .add { color: var(--ok); }
+  pre .del { color: var(--bad); }
+  pre .cm { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .9em; }
+  th, td { border: 1px solid var(--border); padding: .45em .7em; text-align: left; vertical-align: top; }
+  th { background: var(--head-bg); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  .lede { color: var(--muted); font-size: 1.06em; margin-bottom: 1.4em; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4em; margin: 0 0 2em; }
+  .note, .warn, .decision {
+    border-left: 3px solid var(--accent); background: var(--code-bg);
+    padding: .8em 1em; margin: 1.2em 0; border-radius: 0 6px 6px 0;
+  }
+  .warn { border-left-color: var(--warn); background: var(--warn-bg); }
+  .decision { border-left-color: var(--ok); background: var(--ok-bg); }
+  .small { font-size: .88em; color: var(--muted); }
+  .phase { border: 1px solid var(--border); border-radius: 8px; padding: .9em 1.2em; margin: 1.2em 0; }
+  .phase h3, .phase h4 { margin-top: 0; }
+  .phase .done-when { margin: .7em 0 0; padding: .6em .9em; border-radius: 6px; background: var(--code-bg); }
+  .phase .status { margin: 0 0 .7em; padding: .6em .9em; border-radius: 6px; background: var(--ok-bg); color: var(--ok); }
+  .tag {
+    display: inline-block; font-size: .72em; font-weight: 650; letter-spacing: .03em;
+    text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: .08em .65em; vertical-align: middle;
+  }
+  .tag.ok { color: var(--ok); border-color: currentColor; background: var(--ok-bg); }
+  .tag.bad { color: var(--bad); border-color: currentColor; background: var(--bad-bg); }
+  .tag.unk { color: var(--unk); border-color: currentColor; background: var(--unk-bg); }
+  .tag.acc { color: var(--accent); border-color: currentColor; }
+  td .tag { white-space: nowrap; }
+  figure.diagram { margin: 1.6em 0; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 1em 1em .6em; }
+  figure.diagram svg { display: block; width: 100%; height: auto; overflow: visible; }
+  @media (max-width: 720px) {
+    figure.diagram { overflow-x: auto; }
+    figure.diagram svg { min-width: 680px; }
+  }
+  figure.diagram figcaption { color: var(--muted); font-size: .86em; margin-top: .6em; line-height: 1.5; }
+  svg text { fill: var(--fg); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  svg text.sub { fill: var(--muted); font-size: 11.5px; }
+  svg text.lane { fill: var(--muted); font-size: 11px; letter-spacing: .14em; font-weight: 650; }
+  svg text.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  svg text.lbl { fill: var(--muted); font-size: 11px; }
+  svg .node rect { fill: var(--code-bg); stroke: var(--border); stroke-width: 1.5; }
+  svg .node.ok rect { stroke: var(--ok); }
+  svg .node.bad rect { stroke: var(--bad); fill: var(--bad-bg); }
+  svg .node.unk rect { stroke: var(--unk); fill: var(--unk-bg); }
+  svg .node.acc rect { stroke: var(--accent); }
+  svg .group { fill: none; stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 4 5; }
+  svg .wire { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+  svg .axis { stroke: var(--border); stroke-width: 2; }
+  svg .flow { fill: none; stroke-width: 2; stroke-dasharray: 6 6; animation: march 1s linear infinite; }
+  svg .flow.req { stroke: var(--req); }
+  svg .flow.res { stroke: var(--res); }
+  svg .flow.bad { stroke: var(--bad); animation-duration: 2.4s; }
+  svg .flow.par { stroke: var(--muted); }
+  svg .arrowhead { fill: var(--muted); }
+  svg .packet.req { fill: var(--req); }
+  svg .packet.res { fill: var(--res); }
+  svg .packet.bad { fill: var(--bad); }
+  svg .cross { fill: var(--bad); font-weight: 700; }
+  svg .pulse { animation: pulse 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes march { to { stroke-dashoffset: -12; } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  .paused svg .flow, .paused svg .pulse { animation-play-state: paused; }
+  @media (prefers-reduced-motion: reduce) {
+    svg .flow, svg .pulse { animation: none; }
+    svg .packet { display: none; }
+  }
+  @media (max-width: 1240px) {
+    .shell { grid-template-columns: 14rem minmax(0, 1fr); }
+    .right { grid-column: 2; position: static; max-height: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0 1em; }
+    .right > h2 { grid-column: 1 / -1; }
+  }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: minmax(0, 1fr); padding: 1.5rem 1.1rem 4rem; gap: 1.5rem; }
+    .left { position: static; max-height: none; border: 1px solid var(--border); border-radius: 8px; padding: .8em 1em; }
+    .left nav a { border-left: 0; padding: .18em 0; }
+    .left nav ol ol a { padding-left: 1.2em; }
+    .right { grid-column: 1; }
+  }
+  @media print {
+    :root {
+      --bg: #fff; --fg: #000; --muted: #444; --accent: #000; --border: #999; --code-bg: #fff; --head-bg: #eee;
+      --panel: #fff; --warn: #000; --warn-bg: #fff; --ok: #000; --ok-bg: #fff; --bad: #000; --bad-bg: #fff; --unk: #000; --unk-bg: #fff;
+    }
+    .progress, .left, .rail-tools { display: none; }
+    .shell { display: block; padding: 0; max-width: none; }
+    .right { position: static; max-height: none; display: block; }
+    body { font-size: 10.5pt; line-height: 1.5; }
+    svg .packet { display: none; }
+    h2, h3, h4 { break-after: avoid; }
+    table, pre, .phase, .note, .warn, .decision, figure { break-inside: avoid; }
+  }
+</style>
+<style>
+  /* this page */
+  ol.steps { padding-left: 1.4em; }
+  ol.steps > li { margin: .7em 0; }
+</style>
+</head>
+<body>
+<div class="progress" id="progress" aria-hidden="true"></div>
+
+<div class="shell">
+
+<!-- ================= LEFT: contents ================= -->
+<aside class="rail left" aria-label="Contents">
+  <h2>Contents</h2>
+  <nav>
+    <ol>
+      <li><a href="#summary">Summary</a></li>
+      <li><a href="#flow">Data flow</a></li>
+      <li><a href="#process">Process</a></li>
+      <li><a href="#steps">Steps</a></li>
+      <li><a href="#acceptance">Acceptance</a></li>
+      <li><a href="#verified">What is verified</a></li>
+      <li><a href="#risks">Limits and risks</a></li>
+      <li><a href="#files">Files</a></li>
+      <li><a href="#open">Open questions</a></li>
+    </ol>
+  </nav>
+  <div class="rail-tools">
+    <button type="button" id="anim-toggle" aria-pressed="false">Pause diagrams</button>
+    <p>Diagrams start paused when your system asks for reduced motion.</p>
+  </div>
+</aside>
+
+<!-- ================= CENTER: document ================= -->
+<main>
+
+<h1>{{TITLE}}</h1>
+<p class="lede">{{LEDE}}</p>
+<div class="meta">
+  <span class="tag">Plan</span>
+  <span class="tag">Planned {{DATE}}</span>
+  <span class="tag unk">nothing built yet</span>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="summary">Summary</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Today</th><th>What we found</th><th>Plan</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Topic</strong><br /><span class="tag unk">gap</span></td>
+      <td>How it is now, measured, with paths and versions.</td>
+      <td>What the measurement showed, and why it matters.</td>
+      <td>What this plan changes. One row per topic; tags: ok, gap, risk, waste.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="decision">
+  <strong>Decided {{DATE}}: the choice, in one line.</strong>
+  Why, in one or two sentences, and what was rejected. Remove this box until something is decided.
+</div>
+
+<!-- ======================================================= -->
+<h2 id="flow">Data flow</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 170" role="img" aria-labelledby="dA-t dA-d">
+  <title id="dA-t">Data flow: replace with what moves where</title>
+  <desc id="dA-d">Replace: who asks, on the left, calls the part this plan changes, in the middle, which writes to where the result lands, on the right; the answer comes back the same way.</desc>
+  <defs>
+    <marker id="dA-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+  <text class="lane" x="10" y="20">WHO ASKS</text>
+  <text class="lane" x="330" y="20">WHAT CHANGES</text>
+  <text class="lane" x="690" y="20">WHERE IT LANDS</text>
+
+  <path class="flow req" d="M230,70 H328" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M590,70 H688" marker-end="url(#dA-arrow)" />
+  <path class="flow res" d="M690,104 H592" marker-end="url(#dA-arrow)" />
+  <path class="flow res" d="M330,104 H232" marker-end="url(#dA-arrow)" />
+
+  <g class="node"><rect x="10" y="40" width="220" height="90" rx="8" /><text x="120" y="80" text-anchor="middle">caller</text><text class="sub" x="120" y="98" text-anchor="middle">a person, a session, a client</text></g>
+  <g class="node acc"><rect x="330" y="40" width="260" height="90" rx="8" /><text x="460" y="80" text-anchor="middle">the change</text><text class="sub" x="460" y="98" text-anchor="middle">the part this plan adds or alters</text></g>
+  <g class="node"><rect x="690" y="40" width="220" height="90" rx="8" /><text x="800" y="80" text-anchor="middle">store or output</text><text class="sub" x="800" y="98" text-anchor="middle">where the result lands</text></g>
+
+  <circle class="packet req" r="5"><animateMotion dur="6s" repeatCount="indefinite" path="M120,70 H800" keyPoints="0;1;1" keyTimes="0;0.45;1" calcMode="linear" /></circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="6s" repeatCount="indefinite" path="M800,104 H120" keyPoints="0;0;1;1" keyTimes="0;0.5;0.95;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.5;0.51;0.95;1" />
+  </circle>
+</svg>
+<figcaption>
+  Replace: blue tokens are requests, green ones answers. Say in a sentence or two what the
+  picture shows that the text does not.
+</figcaption>
+</figure>
+
+<!-- ======================================================= -->
+<h2 id="process">Process</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 120" role="img" aria-labelledby="dB-t dB-d">
+  <title id="dB-t">Process: replace with the steps, in order</title>
+  <desc id="dB-d">Replace: the plan's steps from left to right, ending with the check that proves it works.</desc>
+  <defs>
+    <marker id="dB-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+  <text class="lane" x="10" y="20">IN ORDER</text>
+
+  <path class="flow req" d="M215,71 H239" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M446,71 H470" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M677,71 H701" marker-end="url(#dB-arrow)" />
+  <g class="node"><rect x="10" y="40" width="205" height="62" rx="8" /><text x="112" y="66" text-anchor="middle">1 &middot; first step</text><text class="sub" x="112" y="84" text-anchor="middle">same title as on the board</text></g>
+  <g class="node"><rect x="241" y="40" width="205" height="62" rx="8" /><text x="343" y="66" text-anchor="middle">2 &middot; second step</text><text class="sub" x="343" y="84" text-anchor="middle">what it touches</text></g>
+  <g class="node acc"><rect x="472" y="40" width="205" height="62" rx="8" /><text x="574" y="66" text-anchor="middle">3 &middot; third step</text><text class="sub" x="574" y="84" text-anchor="middle">the risky one, if any</text></g>
+  <g class="node ok"><rect x="703" y="40" width="207" height="62" rx="8" /><text x="806" y="66" text-anchor="middle">check</text><text class="sub" x="806" y="84" text-anchor="middle">what the validator runs</text></g>
+
+  <circle class="packet req" r="5"><animateMotion dur="8s" repeatCount="indefinite" path="M112,71 H806" keyPoints="0;1;1" keyTimes="0;0.8;1" calcMode="linear" /></circle>
+</svg>
+<figcaption>
+  Replace: the order of work, and where it can fail. A red branch (class
+  <code>flow bad</code>, a <code>node bad</code>) shows a fail-safe.
+</figcaption>
+</figure>
+
+<!-- ======================================================= -->
+<h2 id="steps">Steps</h2>
+<p>
+  The plan&rsquo;s steps, with the same titles as on the board (<code>document_plan</code>).
+  Each says what it changes and how anyone can tell it is done.
+</p>
+<div class="phase">
+  <h4><span class="tag">1</span> First step title</h4>
+  <p>What it changes, where: files, commands, settings.</p>
+  <p class="done-when"><strong>Done when:</strong> the check a validator can run.</p>
+</div>
+<div class="phase">
+  <h4><span class="tag">2</span> Second step title</h4>
+  <p>What it changes, where.</p>
+  <p class="done-when"><strong>Done when:</strong> the check a validator can run.</p>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="acceptance">Acceptance</h2>
+<ul>
+  <li>The same acceptance criteria as on the board, each one something a validator can run or read.</li>
+</ul>
+
+<!-- ======================================================= -->
+<h2 id="verified">What is verified</h2>
+<div class="phase">
+  <p><em>Nothing yet.</em> After validation: what was checked, how, and on which date. Keep
+  what is not yet verified, and why, in a <code>done-when</code> line below it.</p>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="risks">Limits and risks</h2>
+<ul>
+  <li><strong>A risk.</strong> What could go wrong, how likely, and what limits the damage.</li>
+</ul>
+
+<!-- ======================================================= -->
+<h2 id="files">Files</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Path</th><th>State</th></tr></thead>
+  <tbody>
+    <tr><td><code>path/to/file</code></td><td><span class="tag">new</span> What it holds.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="open">Open questions</h2>
+<ul>
+  <li><strong>A question.</strong> What is undecided, the options, and who decides.</li>
+</ul>
+
+</main>
+
+<!-- ================= RIGHT: at a glance ================= -->
+<aside class="rail right" aria-label="At a glance">
+  <h2>At a glance</h2>
+
+  <div class="card">
+    <h3>This plan</h3>
+    <dl>
+      <dt>Planned</dt><dd>{{DATE}}</dd>
+      <dt>Board</dt><dd>the plan_id, once <code>document_plan</code> has run</dd>
+      <dt>Status</dt><dd>nothing built yet</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Still to do</h3>
+    <ul>
+      <li>what is left, shortest first</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Diagram legend</h3>
+    <div class="legend">
+      <span><i class="swatch" style="background: var(--req)"></i>request, step</span>
+      <span><i class="swatch" style="background: var(--res)"></i>answer, result</span>
+      <span><i class="swatch" style="background: var(--bad)"></i>refused, stopped, fail-safe</span>
+      <span><i class="swatch" style="background: var(--ok)"></i>a check</span>
+    </div>
+  </div>
+</aside>
+
+</div>
+
+<script>
+  (() => {
+    const links = new Map(
+      [...document.querySelectorAll('.left nav a[href^="#"]')].map((a) => [a.getAttribute("href").slice(1), a]),
+    );
+    const targets = [...links.keys()].map((id) => document.getElementById(id)).filter(Boolean);
+    let current = null;
+    const mark = (id) => {
+      if (id === current) return;
+      current = id;
+      links.forEach((a, key) => a.setAttribute("aria-current", String(key === id)));
+    };
+    const spy = () => {
+      const line = window.innerHeight * 0.25;
+      let active = targets[0];
+      for (const t of targets) if (t.getBoundingClientRect().top <= line) active = t;
+      if (active) mark(active.id);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      document.getElementById("progress").style.transform = `scaleX(${max > 0 ? window.scrollY / max : 0})`;
+    };
+    addEventListener("scroll", spy, { passive: true });
+    addEventListener("resize", spy);
+    spy();
+
+    const btn = document.getElementById("anim-toggle");
+    const svgs = [...document.querySelectorAll("svg.anim")];
+    const setPaused = (paused) => {
+      document.body.classList.toggle("paused", paused);
+      svgs.forEach((s) => (paused ? s.pauseAnimations() : s.unpauseAnimations()));
+      btn.setAttribute("aria-pressed", String(paused));
+      btn.textContent = paused ? "Play diagrams" : "Pause diagrams";
+    };
+    btn.addEventListener("click", () => setPaused(btn.getAttribute("aria-pressed") !== "true"));
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) setPaused(true);
+  })();
+</script>
+</body>
+</html>

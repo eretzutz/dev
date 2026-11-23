@@ -1,14 +1,14 @@
 # mcp-board
 
-Shared **plan / progress / state / validation** board for multiple Claude Code (or any MCP) sessions.
+Shared **plan / progress / state / validation** board for multiple Claude Code (or any MCP) sessions. Every plan also has a **page**: an HTML file a person reads, in the project's plan-page convention.
 
 Agents do not coordinate only through chat. They call tools:
 
 | Role | Primary tools |
 |------|----------------|
-| Planner | `document_plan`, `list_followups`, `resolve_followup`, `update_plan_status` |
+| Planner | `plan_doc_template`, `check_plan_doc`, `document_plan`, `list_followups`, `resolve_followup`, `update_plan_status` |
 | Orchestrator | `get_plan`, `report_progress`, `set_state`, `request_followup` |
-| Validator | `list_progress`, `submit_validation`, `request_followup` |
+| Validator | `list_progress`, `check_plan_doc`, `submit_validation`, `request_followup` |
 
 Persistence: `MCP_BOARD_PATH/board.json` (default `./.mcp-board/board.json`). Writes are file-locked and atomic, so concurrent sessions on one machine are safe; reads take no lock and never write.
 
@@ -21,6 +21,8 @@ No npm dependencies. Node 18+.
 node server.mjs                       # stdio MCP server (Claude Code spawns this)
 node cli.mjs summary                  # human view of the board
 node cli.mjs call get_board_summary   # any tool from a shell (JSON args, or - for stdin)
+node cli.mjs check-doc docs/x/y.html  # check plan pages; exit 1 on an E error
+node cli.mjs new-doc docs/x/y.html "Title" "the request"   # start a plan page
 node smoke.mjs                        # end-to-end check over stdio (npm test)
 ```
 
@@ -61,17 +63,44 @@ The role prompts are served as MCP prompts, so in Claude Code each session start
 2. Terminal B — Orchestrator: `/mcp__board__orchestrator`
 3. Terminal C — Validator: `/mcp__board__validator`
 
-They come from `prompts/*.md`, or from `MCP_BOARD_PROMPTS` when a project has its own (the file name, lower-cased, is the prompt's name). All three use the same repo (or worktrees) and the same board.
+They come from `prompts/*.md`, or from `MCP_BOARD_PROMPTS` when a project has its own (the file name, lower-cased, is the prompt's name). All three use the same repo (or worktrees) and the same board. A fourth, `/mcp__board__plan_doc`, is the plan-page convention (`conventions/PLAN_DOC.md`); it is served beside a project's own prompts too, unless that folder has a `PLAN_DOC.md` of its own.
 
 ## Workflow
 
 ```
-Planner:  get_board_summary → document_plan → update_plan_status(active)
-Orchestrator: get_plan → report_progress* → set_state* → update_plan_status(validating)
-Validator: get_plan + list_progress → submit_validation
+Planner:  get_board_summary → plan_doc_template → (fill in the page) → check_plan_doc
+          → document_plan {doc} → update_plan_status(active)
+Orchestrator: get_plan (read the page) → report_progress* → set_state* → update_plan_status(validating)
+Validator: get_plan + list_progress + check_plan_doc → submit_validation
   if fail → request_followup
-Planner:  list_followups → resolve_followup / document_plan (next iteration)
+Planner:  list_followups → (edit the same page) → resolve_followup / document_plan (next iteration)
 ```
+
+## Plan pages
+
+A plan on the board is a checklist. Its page is the plan a person reads: `docs/<topic>/<slug>.html`, one self-contained file, with the request kept word for word in a leading comment, a left contents nav, a right at-a-glance panel, and animated data-flow and process diagrams. The convention is the one set by this repo's `../docs` pages; `conventions/PLAN_DOC.md` says it in words and `plandoc.mjs` checks it:
+
+| Rule | The page has |
+|------|--------------|
+| E1 | `<!doctype html>` and a `<title>` naming the plan |
+| E2 | the brief: a comment before `<html>` with the request verbatim, then dated lines |
+| E3 | left panel: a `<nav>` with 3+ links, each to an id on the page |
+| E4 | right panel: an `<aside>` outside that nav |
+| E5 | an inline SVG diagram that moves (SMIL or CSS keyframes) |
+| E6 | `prefers-reduced-motion` |
+| W1–W6 | dark mode, a pause button, diagram titles, a data flow and a process, no external files, absolute dates |
+| W7 | the page changed when the plan's steps did |
+| W8 | every step title on the board appears in the page |
+
+E rules fail a page; W rules are advice. Class names don't matter: the rules look for features.
+
+- `plan_doc_template {path, title, brief}` writes `templates/plan.html`, filled in, to a new file under the docs root. It never overwrites.
+- `check_plan_doc {path | plan_id}` runs the rules. Read-only.
+- `document_plan {…, doc}` checks the page and keeps `doc` (path, sha256, errors, warnings) on the plan, adds one acceptance item (`plan page … passes check_plan_doc and says what was built`), and answers with `plan_doc`: `missing`, `failing` (with `next`) or `ok`. A replace without `doc` keeps the page.
+- `MCP_BOARD_PLAN_DOC`: `warn` (default) records every plan and says what is missing; `require` refuses a plan without a passing page and records nothing; `off` ignores pages.
+- `get_plan`, `list_plans` and `get_board_summary` show each plan's `page` as it is now: `missing`, `failing`, `ok`, or `behind` (validated, and the page not touched since). `submit_validation` remembers the page's hash for that.
+
+Why the server says it, not only the planner prompt: a role prompt is read once, when someone runs it, and is summarized away by `/compact`; projects with their own `MCP_BOARD_PROMPTS` never see the default one. The server's `initialize` instructions, which Claude Code keeps in every session's system prompt, carry the rule instead, and `document_plan`'s description and result repeat it at the moment a plan is recorded.
 
 ## A project's own source of truth: the hook
 
@@ -84,7 +113,8 @@ So a project can refuse `done` until its evidence exists, mirror events into its
 
 ## Tool reference (short)
 
-- **document_plan** — create/replace plan (`title`, `goal`, `steps[]`, `acceptance[]`); replacing keeps the status of steps whose id is unchanged; a step may carry an initial `status`
+- **document_plan** — create/replace plan (`title`, `goal`, `steps[]`, `acceptance[]`, `doc`); replacing keeps the status of steps whose id is unchanged, and the page; a step may carry an initial `status`
+- **plan_doc_template / check_plan_doc** — start a plan page; check one (by path or plan)
 - **get_plan / list_plans / update_plan_status**
 - **report_progress** — step events (`started|working|blocked|done|failed|skipped`)
 - **set_state / get_state / list_state** — key/value facts (plan-scoped or global)
@@ -101,6 +131,15 @@ So a project can refuse `done` until its evidence exists, mirror events into its
 | `MCP_BOARD_HOOK_CWD` | Working directory for the hook |
 | `MCP_BOARD_HOOK_TIMEOUT_MS` | Hook timeout (default 120000) |
 | `MCP_BOARD_PROMPTS` | Directory of role prompts (default `./prompts`) |
+| `MCP_BOARD_PLAN_DOC` | `warn` (default), `require` or `off`: what `document_plan` does with a plan that has no passing page |
+| `MCP_BOARD_DOCS_ROOT` | What a page's path is relative to (default `MCP_BOARD_HOOK_CWD`, else the working directory); `get_board_summary` shows it |
+
+## Changes in 1.2.0
+
+- Plan pages: `plandoc.mjs` (the rules), `templates/plan.html` (a starter page that passes them), `conventions/PLAN_DOC.md` (prompt `plan_doc`).
+- `document_plan` takes `doc`; `MCP_BOARD_PLAN_DOC` (`warn` by default) decides what happens without a passing page. New tools `plan_doc_template` and `check_plan_doc`; `cli.mjs check-doc` and `new-doc`.
+- The server's instructions name the page, so a planner that never ran its role prompt, or ran `/compact`, still knows.
+- Reads show each plan's `page`; `submit_validation` remembers the page's hash, so a page not updated after validation shows as `behind`.
 
 ## Changes in 1.1.0
 
