@@ -21,6 +21,17 @@
   `page` (the stored record stays `doc`), and the acceptance item is added whenever a plan has a
   page, passing or not, because a failing page is the one the validator most needs to look at.
   See "What is verified".
+- UPDATE 23 Nov 2026, asked "can coding agents use @docs/mcp-board/ to make implementation plan?", then
+  "fix the caveats": the remembering (P3) was verified only in Claude Code. Copilot CLI 1.0.114 puts a
+  server's initialize instructions in the system prompt only for allowlisted servers (or with its
+  allow-all-mcp-server-instructions flag), and its docs say nothing of MCP prompts, so
+  /mcp__board__planner has no counterpart there.
+- measured 23 Nov 2026, Copilot CLI 1.0.114 headless on board 1.2.0, no role prompt, no instructions:
+  the P3 request gave a passing page and doc on its first document_plan, no warnings. The rule reached
+  it through document_plan's description, after a tool search loaded every board tool.
+- BUILT 23 Nov 2026, uncommitted: mcp-board 1.3.0 (P6). get_prompt, the instructions in
+  get_board_summary, reminders that name get_prompt, prompts.mjs; README "Copilot CLI and other MCP
+  clients"; AGENTS.md and CLAUDE.md (which imports it) at the repo root. See "Other agents".
 -->
 <!doctype html>
 <html lang="en">
@@ -276,6 +287,7 @@
       <li><a href="#phases">Phases</a></li>
       <li><a href="#testing">Testing</a></li>
       <li><a href="#verified">What is verified</a></li>
+      <li><a href="#agents">Other agents</a></li>
       <li><a href="#risks">Compatibility and risks</a></li>
       <li><a href="#alternatives">Alternatives considered</a></li>
       <li><a href="#files">Files</a></li>
@@ -305,6 +317,7 @@
   <span class="tag">Plan</span>
   <span class="tag">Planned 22 Nov 2026</span>
   <span class="tag">mcp-board 1.1.0 &rarr; 1.2.0</span>
+  <span class="tag ok">1.3.0: any MCP client &middot; 23 Nov 2026</span>
   <span class="tag ok">rules checked against 4 existing pages</span>
   <span class="tag ok">built 22 Nov 2026 &middot; smoke passes</span>
   <span class="tag acc">default: warn</span>
@@ -681,6 +694,13 @@ convention: the request verbatim in a leading comment, a left contents nav, a ri
 at-a-glance panel, animated data-flow and process diagrams. Start it with plan_doc_template,
 check it with check_plan_doc, and pass its path as doc to document_plan. Prompt plan_doc has
 the details. Orchestrator and validator: get_plan gives the page; read it.</span></code></pre>
+<p class="small">
+  <span class="tag ok">1.3.0</span> The first sentence also says <em>&ldquo;get_prompt {name:
+  "planner" | "orchestrator" | "validator"} gives a role its instructions&rdquo;</em>, and
+  &ldquo;Prompt plan_doc&rdquo; became <em>&ldquo;get_prompt {name: "plan_doc"}&rdquo;</em>,
+  because not every client offers MCP prompts. <code>get_board_summary</code> returns the
+  same text, for clients that leave it out of the system prompt.
+</p>
 
 <h4><code>document_plan</code>&rsquo;s description (read right before the call)</h4>
 <pre><code>Planner: create or replace a structured implementation plan. Returns plan_id. Call this before any
@@ -784,6 +804,18 @@ document_plan {plan_id, ...}. When a plan is done, write what was verified into 
   </ul>
 </div>
 
+<div class="phase">
+  <h4><span class="tag">P6</span> Other agents <span class="tag ok">done</span></h4>
+  <p class="status">Built 23 Nov 2026: mcp-board 1.3.0, checked with Copilot CLI 1.0.114 (see <a href="#agents">Other agents</a>).</p>
+  <ul>
+    <li><code>get_prompt {name}</code>: the role prompts and <code>plan_doc</code>, as a tool; without <code>name</code>, the list.</li>
+    <li><code>get_board_summary</code> starts with <code>instructions</code>, the text <code>initialize</code> sends.</li>
+    <li>The instructions, <code>plan_doc_template</code>&rsquo;s description and <code>document_plan</code>&rsquo;s reminders name <code>get_prompt {name: "plan_doc"}</code> instead of the prompt. Instructions and prompts move to <code>prompts.mjs</code>.</li>
+    <li>README: &ldquo;Copilot CLI and other MCP clients&rdquo;. This repo: <code>AGENTS.md</code>, and <code>CLAUDE.md</code> importing it, for a request that names no board.</li>
+  </ul>
+  <p class="done-when"><strong>Done when:</strong> smoke case 13 passes, and headless Copilot CLI sessions, without the allow-all flag and without a role prompt unless said: (1) the P3 request gives a passing page; (2) a fresh session does the follow-up iteration on the same page; (3) a session started as the planner through <code>get_prompt</code> gives a passing page.</p>
+</div>
+
 <!-- ======================================================= -->
 <h2 id="testing">Testing</h2>
 <p>All in <code>smoke.mjs</code>, on a temp board and a temp docs root, over stdio as today.</p>
@@ -800,6 +832,7 @@ document_plan {plan_id, ...}. When a plan is done, write what was verified into 
   <li><code>submit_validation</code>, then the summary shows <code>behind</code>; edit the page and it does not.</li>
   <li><code>get_board_summary</code> still leaves <code>board.json</code>&rsquo;s mtime alone.</li>
   <li>Fixtures: <code>check-doc</code> on every <code>docs/**/*.html</code> beside mcp-board, when there are any, gives 0 errors. This page is one of them.</li>
+  <li><code>get_prompt</code> lists the prompts and returns each one&rsquo;s text, the same as <code>prompts/get</code>; it has <code>plan_doc</code> beside a project&rsquo;s own prompts; an unknown name is an error. <code>get_board_summary</code>&rsquo;s <code>instructions</code> equal <code>initialize</code>&rsquo;s, on both servers.</li>
 </ol>
 
 <!-- ======================================================= -->
@@ -815,7 +848,57 @@ document_plan {plan_id, ...}. When a plan is done, write what was verified into 
     <li><strong>And after <code>/compact</code>.</strong> The same session, compacted, then given &ldquo;Follow-up from review: also accept -n as a short form of --name. Do the next iteration of the plan on the board.&rdquo;, read the plan and its page, added <em>&ldquo;UPDATE 22 Nov 2026 (iteration 2, from review)&rdquo;</em> with a DECIDED line to the brief, revised the page, and called <code>document_plan</code> with the same plan_id: page kept, <code>ok</code>, no warnings.</li>
   </ul>
   <p class="done-when"><strong>Not verified:</strong> a session in <code>require</code> mode in a real project (only in the smoke test); xiliap&rsquo;s and berith&rsquo;s sessions after a restart onto 1.2.0; whether Claude Code shortens longer server instructions (these are 611 characters in <code>warn</code> mode, and the session acted on them; their exact text in its system prompt was not inspected).</p>
+  <p class="status"><em>Verified 23 Nov 2026, mcp-board 1.3.0:</em> the smoke test passes with case 13; Copilot CLI 1.0.114 plans on the board, see <a href="#agents">Other agents</a>.</p>
 </div>
+
+<!-- ======================================================= -->
+<h2 id="agents">Other agents</h2>
+<p>
+  The board is a plain stdio MCP server, so any client can call it. What differs is what
+  each client puts in front of the model. P3 leaned on two things only Claude Code is known
+  to do, so 1.3.0 says everything that matters through the tools as well, since every
+  client shows those.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>How the model learns it</th><th>Claude Code</th><th>Copilot CLI 1.0.114</th><th>Any MCP client</th></tr></thead>
+  <tbody>
+    <tr><td>The server&rsquo;s <code>initialize</code> instructions</td><td><span class="tag ok">system prompt</span> every turn</td><td><span class="tag bad">left out</span> unless the server is allowlisted, or with <code>--allow-all-mcp-server-instructions</code></td><td><span class="tag unk">varies</span></td></tr>
+    <tr><td>Role prompts as MCP prompts</td><td><span class="tag ok">yes</span> <code>/mcp__board__planner</code></td><td><span class="tag unk">not documented</span></td><td><span class="tag unk">varies</span></td></tr>
+    <tr><td><code>get_prompt {name}</code> <span class="tag ok">1.3.0</span></td><td><span class="tag ok">yes</span></td><td><span class="tag ok">yes</span></td><td><span class="tag ok">yes</span></td></tr>
+    <tr><td><code>get_board_summary</code>&rsquo;s <code>instructions</code> <span class="tag ok">1.3.0</span></td><td><span class="tag ok">yes</span></td><td><span class="tag ok">yes</span></td><td><span class="tag ok">yes</span></td></tr>
+    <tr><td><code>document_plan</code>&rsquo;s description and result</td><td><span class="tag ok">yes</span></td><td><span class="tag ok">yes</span></td><td><span class="tag ok">yes</span></td></tr>
+    <tr><td>The project&rsquo;s <code>AGENTS.md</code>, for a request that names no board</td><td><span class="tag ok">via</span> <code>CLAUDE.md</code>: <code>@AGENTS.md</code></td><td><span class="tag ok">yes</span> (and <code>CLAUDE.md</code>)</td><td><span class="tag unk">most</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Measured with Copilot CLI</h3>
+<p>
+  Headless (<code>copilot -p</code>) in a scratch git repo holding only <code>hello.mjs</code>,
+  with the board as its only MCP server, no custom instructions, and not the allow-all flag;
+  23 Nov 2026, Copilot CLI 1.0.114, default model.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Run</th><th>Board</th><th>Asked</th><th>What it did</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>A</td><td>1.2.0</td><td>The P3 request: <em>&ldquo;Plan, on the board, adding a --name flag &hellip; Only plan; don&rsquo;t implement it.&rdquo;</em></td><td>A tool search loaded all 17 board tools; <code>get_board_summary</code>, <code>plan_doc_template</code>, 19 edits, <code>document_plan {doc}</code>, <code>check_plan_doc</code>.</td><td><span class="tag ok">ok</span> first <code>document_plan</code> had <code>doc</code>; no warnings; 40&nbsp;s</td></tr>
+    <tr><td>C</td><td>1.3.0</td><td><em>&ldquo;Be the planner on the board: call its get_prompt tool with {"name": "planner"} and follow what it says.&rdquo;</em> and a <code>--shout</code> request</td><td><code>get_prompt</code> planner, <code>get_board_summary</code>, <code>list_followups</code>, <code>plan_doc_template</code>, edits, <code>check_plan_doc</code>, <code>document_plan {doc}</code>.</td><td><span class="tag ok">ok</span> no warnings; 38&nbsp;s</td></tr>
+    <tr><td>B</td><td>1.3.0</td><td>A fresh session on A&rsquo;s board: the P3 follow-up, <em>&ldquo;also accept -n &hellip; Do the next iteration of the plan on the board.&rdquo;</em></td><td>Read the summary, then took <code>get_prompt</code> orchestrator: the plan was <code>active</code>, so it built <code>-n</code>, reported the steps done and set <code>validating</code>. It edited the page too, though the orchestrator prompt says not to, after <code>document_plan</code> had recorded the old hash.</td><td><span class="tag unk">page ok</span> wrong role: the request named none</td></tr>
+    <tr><td>B2</td><td>1.3.0</td><td>B again from A&rsquo;s board, with A&rsquo;s <em>&ldquo;Only plan; don&rsquo;t implement it.&rdquo;</em></td><td>Called <code>get_prompt</code> planner on its own, then the summary and <code>get_plan</code>; added <em>&ldquo;UPDATE 23 Nov 2026 (review follow-up)&rdquo;</em> to the brief, revised the steps and acceptance on the same page, <code>check_plan_doc</code>, <code>document_plan</code> with the same plan_id.</td><td><span class="tag ok">ok</span> page kept, hash current, no warnings; <code>hello.mjs</code> untouched; 21&nbsp;s</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  So the page rule already reached Copilot CLI through <code>document_plan</code> in 1.2.0
+  (run A). What 1.3.0 adds is a way in for the roles: <code>get_prompt</code> worked when asked
+  for (C), and a session with no role went to it unprompted (B, B2). B shows the limit: a
+  request that names no role, on a board whose plan is <code>active</code>, reads as work for
+  the orchestrator. Start a Copilot CLI session as a role, as the README says:
+  <code>copilot -i 'Be the planner on the board: call its get_prompt tool with {"name": "planner"} and follow it.'</code>
+</p>
+<p class="done-when"><strong>Not verified:</strong> <code>/compact</code> in Copilot CLI (a fresh session, which keeps less, was tested instead); whether Copilot CLI offers MCP prompts at all; Codex, Cursor and Gemini CLI, which are not installed here; a request with no board and no <code>AGENTS.md</code>, which nothing on the board can reach.</p>
 
 <!-- ======================================================= -->
 <h2 id="risks">Compatibility and risks</h2>
@@ -853,12 +936,14 @@ document_plan {plan_id, ...}. When a plan is done, write what was verified into 
     <tr><td><code>mcp-board/plandoc.mjs</code></td><td><span class="tag ok">new</span> the rules, the docs root, the template renderer and writer</td><td>P0</td></tr>
     <tr><td><code>mcp-board/templates/plan.html</code></td><td><span class="tag ok">new</span> the starter page</td><td>P0</td></tr>
     <tr><td><code>mcp-board/conventions/PLAN_DOC.md</code></td><td><span class="tag ok">new</span> the convention in words; prompt <code>plan_doc</code>, with the rules filled in from <code>plandoc.mjs</code></td><td>P2</td></tr>
-    <tr><td><code>mcp-board/tools.mjs</code></td><td><span class="tag ok">changed</span> <code>document_plan.doc</code>, the modes, two tools, <code>page</code> in reads, the hash on validation</td><td>P1, P2</td></tr>
-    <tr><td><code>mcp-board/server.mjs</code></td><td><span class="tag ok">changed</span> instructions, the built-in prompt, version</td><td>P2, P3</td></tr>
+    <tr><td><code>mcp-board/tools.mjs</code></td><td><span class="tag ok">changed</span> <code>document_plan.doc</code>, the modes, two tools, <code>page</code> in reads, the hash on validation; <code>get_prompt</code>, instructions in the summary</td><td>P1, P2, P6</td></tr>
+    <tr><td><code>mcp-board/server.mjs</code></td><td><span class="tag ok">changed</span> instructions, the built-in prompt, version; both moved to <code>prompts.mjs</code></td><td>P2, P3, P6</td></tr>
+    <tr><td><code>mcp-board/prompts.mjs</code></td><td><span class="tag ok">new</span> the instructions and the prompts, shared by the server and the tools</td><td>P6</td></tr>
     <tr><td><code>mcp-board/cli.mjs</code></td><td><span class="tag ok">changed</span> <code>check-doc</code>, <code>new-doc</code></td><td>P0, P2</td></tr>
-    <tr><td><code>mcp-board/prompts/*.md</code></td><td><span class="tag ok">changed</span> the page section and two rules</td><td>P3</td></tr>
-    <tr><td><code>mcp-board/smoke.mjs</code></td><td><span class="tag ok">changed</span> the twelve cases; a second server in <code>require</code> mode</td><td>P1&ndash;P3</td></tr>
-    <tr><td><code>mcp-board/README.md</code>, <code>package.json</code></td><td><span class="tag ok">changed</span> a Plan pages section, env, 1.2.0</td><td>P4</td></tr>
+    <tr><td><code>mcp-board/prompts/*.md</code></td><td><span class="tag ok">changed</span> the page section and two rules; <code>PLANNER.md</code> names <code>get_prompt</code></td><td>P3, P6</td></tr>
+    <tr><td><code>mcp-board/smoke.mjs</code></td><td><span class="tag ok">changed</span> the twelve cases; a second server in <code>require</code> mode; case 13</td><td>P1&ndash;P3, P6</td></tr>
+    <tr><td><code>mcp-board/README.md</code>, <code>package.json</code></td><td><span class="tag ok">changed</span> a Plan pages section, env, 1.2.0; Copilot CLI and other MCP clients, 1.3.0</td><td>P4, P6</td></tr>
+    <tr><td><code>AGENTS.md</code>, <code>CLAUDE.md</code></td><td><span class="tag ok">new</span> this repo&rsquo;s plans are pages, for any agent; <code>CLAUDE.md</code> is <code>@AGENTS.md</code></td><td>P6</td></tr>
     <tr><td><code>docs/mcp-board/plan-pages.html</code></td><td><span class="tag ok">this page</span> and the first fixture</td><td></td></tr>
   </tbody>
 </table>
@@ -883,7 +968,7 @@ document_plan {plan_id, ...}. When a plan is done, write what was verified into 
   <div class="card">
     <h3>The change</h3>
     <dl>
-      <dt>Version</dt><dd>1.1.0 &rarr; 1.2.0</dd>
+      <dt>Version</dt><dd>1.1.0 &rarr; 1.2.0 &rarr; 1.3.0</dd>
       <dt>Page</dt><dd><code>docs/&lt;topic&gt;/&lt;slug&gt;.html</code></dd>
       <dt>Gate</dt><dd><code>MCP_BOARD_PLAN_DOC</code></dd>
       <dt>Default</dt><dd><code>warn</code></dd>
@@ -898,6 +983,7 @@ document_plan {plan_id, ...}. When a plan is done, write what was verified into 
       <dt>Arg</dt><dd><code>document_plan.doc</code></dd>
       <dt>Prompt</dt><dd><code>plan_doc</code></dd>
       <dt>CLI</dt><dd><code>check-doc</code>, <code>new-doc</code></dd>
+      <dt>1.3.0</dt><dd><code>get_prompt</code>; <code>instructions</code> in the summary</dd>
     </dl>
   </div>
 
@@ -921,6 +1007,9 @@ document_plan {plan_id, ...}. When a plan is done, write what was verified into 
       <dt>berith</dt><dd>own prompts, own hook; plans from <code>handoff.md</code></dd>
     </dl>
     <p class="small">Neither prompt folder mentions HTML, so the rule has to come from the server.</p>
+    <dl>
+      <dt>Agents</dt><dd>Claude Code 22 Nov 2026; Copilot CLI 23 Nov 2026</dd>
+    </dl>
   </div>
 
   <div class="card">

@@ -111,6 +111,14 @@ try {
   assert.match(planDocPrompt, /\*\*E1\*\*/, "the plan_doc prompt lists the rules");
   assert.doesNotMatch(planDocPrompt, /\{\{RULES\}\}/);
 
+  // ── 13: clients that drop server instructions or MCP prompts get both from tools ──
+  assert.match(tools.find((t) => t.name === "get_prompt").description, /planner/);
+  assert.deepEqual((await tool("get_prompt", {})).data.prompts.map((p) => p.name), prompts, "13: get_prompt lists the prompts");
+  assert.equal((await tool("get_prompt", { name: "Planner" })).data.text, (await rpc("prompts/get", { name: "planner" })).result.messages[0].content.text);
+  assert.equal((await tool("get_prompt", { name: "plan_doc" })).data.text, planDocPrompt);
+  assert.match((await tool("get_prompt", { name: "nope" })).data.error, /unknown prompt: nope \(have: orchestrator, plan_doc/);
+  assert.equal((await tool("get_board_summary", {})).data.instructions, initA.instructions, "13: the summary repeats the instructions");
+
   // ── The board as before; the plans have no page, so warn mode reminds. ──
   const first = await tool("document_plan", {
     title: "Smoke",
@@ -225,7 +233,10 @@ try {
   fs.writeFileSync(path.join(promptsB, "PLANNER.md"), "# Planner, project style\n\nPlan.\n");
   const boardB = path.join(tmp, "b");
   const b = start({ MCP_BOARD_PATH: boardB, MCP_BOARD_DOCS_ROOT: repo, MCP_BOARD_PLAN_DOC: "require", MCP_BOARD_PROMPTS: promptsB });
-  assert.match((await b.init()).instructions, /refuses a plan without a passing page/);
+  const initB = await b.init();
+  assert.match(initB.instructions, /refuses a plan without a passing page/);
+  assert.equal((await b.tool("get_board_summary", {})).data.instructions, initB.instructions);
+  assert.match((await b.tool("get_prompt", { name: "plan_doc" })).data.text, /\*\*E1\*\*/, "13: get_prompt serves plan_doc beside a project's prompts");
   assert.deepEqual(
     (await b.rpc("prompts/list", {})).result.prompts.map((x) => x.name),
     ["plan_doc", "planner"],
@@ -256,7 +267,7 @@ try {
 
   console.log(
     `smoke: OK (handshake, tools, prompts, hook refusal and ref, follow-ups, plan replace, lock-free reads, ` +
-      `plan pages: template, check, warn, require, W7/W8, behind; ${pages.length} page(s) in ../docs pass)`,
+      `plan pages: template, check, warn, require, W7/W8, behind; get_prompt, instructions in the summary; ${pages.length} page(s) in ../docs pass)`,
   );
 } catch (e) {
   console.error(`smoke: FAILED: ${e.stack || e.message}`);

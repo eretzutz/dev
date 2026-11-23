@@ -1,6 +1,6 @@
 # mcp-board
 
-Shared **plan / progress / state / validation** board for multiple Claude Code (or any MCP) sessions. Every plan also has a **page**: an HTML file a person reads, in the project's plan-page convention.
+Shared **plan / progress / state / validation** board for multiple Claude Code, Copilot CLI (or any MCP) sessions. Every plan also has a **page**: an HTML file a person reads, in the project's plan-page convention.
 
 Agents do not coordinate only through chat. They call tools:
 
@@ -55,6 +55,53 @@ or a project `.mcp.json` / user `~/.claude.json`:
 
 Point **every** role session at the **same** `MCP_BOARD_PATH` so they share one board. A session loads its MCP servers when it starts: restart a running session after adding the server. Sub-agents it spawns get the same tools.
 
+## Copilot CLI and other MCP clients
+
+The board is a plain stdio MCP server, so any client can use it. Copilot CLI reads the same `.mcp.json` from the project (once the folder is trusted); `"type": "stdio"` suits both it and Claude Code, and setting the docs root makes plan pages land in the project whatever directory the client starts the server in:
+
+```json
+{
+  "mcpServers": {
+    "board": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/mcp-board/server.mjs"],
+      "env": {
+        "MCP_BOARD_PATH": "/absolute/path/to/your-repo/.mcp-board",
+        "MCP_BOARD_DOCS_ROOT": "/absolute/path/to/your-repo"
+      }
+    }
+  }
+}
+```
+
+(`copilot mcp add board --env MCP_BOARD_PATH=… --env MCP_BOARD_DOCS_ROOT=… -- node …/server.mjs` does the same in the user config, which every project shares.)
+
+Clients differ in what they pass to the model, so the board says everything that matters through its tools too:
+
+| How the model learns it | Claude Code | Copilot CLI | Any MCP client |
+|-------------------------|-------------|-------------|----------------|
+| The server's `initialize` instructions | system prompt, every turn | only for allowlisted servers, or with `--allow-all-mcp-server-instructions` | varies |
+| Role prompts as MCP prompts | `/mcp__board__planner` | not documented | varies |
+| `get_prompt {name}`: the same prompts, as a tool | yes | yes | yes |
+| `get_board_summary`'s `instructions`: the same instructions | yes | yes | yes |
+| `document_plan`'s description and result: the page rule | yes | yes | yes |
+
+So in Copilot CLI a role session starts with:
+
+```bash
+copilot -i 'Be the planner on the board: call its get_prompt tool with {"name": "planner"} and follow it.'
+```
+
+and `orchestrator` or `validator` likewise. Without a role, asking for a plan "on the board" is enough: the tools lead to the page.
+
+A request that doesn't mention the board reaches none of this. For that, put the rule in the project's `AGENTS.md` (Copilot CLI, Codex and others read it; Claude Code reads `CLAUDE.md`, which can import it with `@AGENTS.md`), for example:
+
+```markdown
+Implementation plans go on the board (MCP server `board`): every plan is an HTML page,
+docs/<topic>/<slug>.html. Call get_prompt {name: "planner"} and follow it.
+```
+
 ## Suggested session setup
 
 The role prompts are served as MCP prompts, so in Claude Code each session starts with one command:
@@ -63,7 +110,7 @@ The role prompts are served as MCP prompts, so in Claude Code each session start
 2. Terminal B — Orchestrator: `/mcp__board__orchestrator`
 3. Terminal C — Validator: `/mcp__board__validator`
 
-They come from `prompts/*.md`, or from `MCP_BOARD_PROMPTS` when a project has its own (the file name, lower-cased, is the prompt's name). All three use the same repo (or worktrees) and the same board. A fourth, `/mcp__board__plan_doc`, is the plan-page convention (`conventions/PLAN_DOC.md`); it is served beside a project's own prompts too, unless that folder has a `PLAN_DOC.md` of its own.
+They come from `prompts/*.md`, or from `MCP_BOARD_PROMPTS` when a project has its own (the file name, lower-cased, is the prompt's name). All three use the same repo (or worktrees) and the same board. A fourth, `/mcp__board__plan_doc`, is the plan-page convention (`conventions/PLAN_DOC.md`); it is served beside a project's own prompts too, unless that folder has a `PLAN_DOC.md` of its own. The `get_prompt` tool serves the same prompts to clients that don't offer MCP prompts (below).
 
 ## Workflow
 
@@ -100,7 +147,7 @@ E rules fail a page; W rules are advice. Class names don't matter: the rules loo
 - `MCP_BOARD_PLAN_DOC`: `warn` (default) records every plan and says what is missing; `require` refuses a plan without a passing page and records nothing; `off` ignores pages.
 - `get_plan`, `list_plans` and `get_board_summary` show each plan's `page` as it is now: `missing`, `failing`, `ok`, or `behind` (validated, and the page not touched since). `submit_validation` remembers the page's hash for that.
 
-Why the server says it, not only the planner prompt: a role prompt is read once, when someone runs it, and is summarized away by `/compact`; projects with their own `MCP_BOARD_PROMPTS` never see the default one. The server's `initialize` instructions, which Claude Code keeps in every session's system prompt, carry the rule instead, and `document_plan`'s description and result repeat it at the moment a plan is recorded.
+Why the server says it, not only the planner prompt: a role prompt is read once, when someone runs it, and is summarized away by `/compact`; projects with their own `MCP_BOARD_PROMPTS` never see the default one. The server's `initialize` instructions, which Claude Code keeps in every session's system prompt, carry the rule instead, and `document_plan`'s description and result repeat it at the moment a plan is recorded. Clients that leave the instructions out (Copilot CLI, unless told otherwise) get them in `get_board_summary`'s result.
 
 ## A project's own source of truth: the hook
 
@@ -120,7 +167,8 @@ So a project can refuse `done` until its evidence exists, mirror events into its
 - **set_state / get_state / list_state** — key/value facts (plan-scoped or global)
 - **submit_validation / list_validations**
 - **request_followup / list_followups / resolve_followup** — only priority `blocking` sets the plan `blocked`
-- **get_board_summary** — start-of-session snapshot, with open and recently resolved follow-ups
+- **get_board_summary** — start-of-session snapshot: the board's instructions, then plans with their pages, open and recently resolved follow-ups
+- **get_prompt** — a role prompt or `plan_doc` by `name`, or the list without one; for clients without MCP prompts
 
 ## Env
 
@@ -133,6 +181,12 @@ So a project can refuse `done` until its evidence exists, mirror events into its
 | `MCP_BOARD_PROMPTS` | Directory of role prompts (default `./prompts`) |
 | `MCP_BOARD_PLAN_DOC` | `warn` (default), `require` or `off`: what `document_plan` does with a plan that has no passing page |
 | `MCP_BOARD_DOCS_ROOT` | What a page's path is relative to (default `MCP_BOARD_HOOK_CWD`, else the working directory); `get_board_summary` shows it |
+
+## Changes in 1.3.0
+
+- For clients other than Claude Code: `get_prompt` serves the role prompts and `plan_doc` as a tool, and `get_board_summary` starts with the server's instructions. Copilot CLI leaves out the instructions of servers it hasn't allowlisted, and doesn't document MCP prompts.
+- The instructions, `plan_doc_template` and `document_plan`'s reminders point to `get_prompt {name: "plan_doc"}` rather than to the prompt.
+- The prompts and instructions moved from `server.mjs` to `prompts.mjs`, shared with the tools.
 
 ## Changes in 1.2.0
 

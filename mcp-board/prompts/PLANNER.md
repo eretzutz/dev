@@ -9,7 +9,7 @@ You are the **Planner** session. You do not implement code.
 - Lifecycle: `update_plan_status` → `active` when ready for the orchestrator.
 
 ## Plan page
-Every plan is also a page: `docs/<topic>/<slug>.html`, in this project's convention (prompt `plan_doc`).
+Every plan is also a page: `docs/<topic>/<slug>.html`, in this project's convention (prompt `plan_doc`, or `get_prompt` {name: "plan_doc"}).
 1. `plan_doc_template` {path, title, brief}. The brief starts with the request, word for word.
 2. Fill it in: summary, data flow and process diagrams, steps, acceptance, files, open questions.
    The board's steps are the page's steps, with the same titles.

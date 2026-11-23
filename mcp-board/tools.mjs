@@ -30,6 +30,7 @@ import {
   showPath,
   writePlanDoc,
 } from "./plandoc.mjs";
+import { INSTRUCTIONS, prompts } from "./prompts.mjs";
 import { BOARD_FILE, newId, readBoard, withBoard } from "./store.mjs";
 
 // ─── Tool definitions (MCP schema) ─────────────────────────────────────────
@@ -106,7 +107,7 @@ export const TOOLS = [
   {
     name: "plan_doc_template",
     description:
-      "Planner: start a plan's HTML page from the board's template, in this project's plan-page convention (the request verbatim in a leading comment, a left contents nav, a right at-a-glance panel, animated data-flow and process diagrams). Writes a new file only. Fill it in, check_plan_doc it, then pass its path as doc to document_plan. Prompt plan_doc has the convention.",
+      "Planner: start a plan's HTML page from the board's template, in this project's plan-page convention (the request verbatim in a leading comment, a left contents nav, a right at-a-glance panel, animated data-flow and process diagrams). Writes a new file only. Fill it in, check_plan_doc it, then pass its path as doc to document_plan. get_prompt {name: \"plan_doc\"} has the convention.",
     inputSchema: {
       type: "object",
       properties: {
@@ -359,9 +360,20 @@ export const TOOLS = [
     },
   },
   {
+    name: "get_prompt",
+    description:
+      'A role\'s instructions, or the plan-page convention, as text: the board\'s MCP prompts, for clients that do not offer them. Start a session as a role with get_prompt {name: "planner" | "orchestrator" | "validator"} and follow it; "plan_doc" is the convention for plan pages. Without name, lists them.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "planner, orchestrator, validator, plan_doc, or a project prompt's name" },
+      },
+    },
+  },
+  {
     name: "get_board_summary",
     description:
-      "Single snapshot for any role: active plans, latest progress, open follow-ups, recent validations. Call at session start.",
+      "Single snapshot for any role: the board's instructions, active plans with their pages, latest progress, open follow-ups, recent validations. Call at session start.",
     inputSchema: {
       type: "object",
       properties: {
@@ -435,7 +447,7 @@ function requirePlan(board, planId) {
 // ─── Plan pages ─────────────────────────────────────────────────────────────
 
 const NEXT_MISSING =
-  'Write this plan as a page: plan_doc_template {path: "docs/<topic>/<slug>.html", title, brief: the request word for word}, fill it in (prompt plan_doc has the convention), check_plan_doc {path}, then document_plan again with plan_id and doc.';
+  'Write this plan as a page: plan_doc_template {path: "docs/<topic>/<slug>.html", title, brief: the request word for word}, fill it in (get_prompt {name: "plan_doc"} has the convention), check_plan_doc {path}, then document_plan again with plan_id and doc.';
 const NEXT_FIX =
   "Fix the page (the errors above), check_plan_doc {path} until it passes, then document_plan again with plan_id (the doc is kept).";
 const PAGE_ITEM = /^plan page \S+ passes check_plan_doc\b/;
@@ -457,7 +469,7 @@ function pageAnswer(page) {
 function refusal(page) {
   const head = "plan page required (MCP_BOARD_PLAN_DOC=require)";
   if (!page)
-    return `${head}: pass doc, the path of this plan's HTML page. Start one with plan_doc_template {path: "docs/<topic>/<slug>.html", title, brief: the request word for word}, fill it in (prompt plan_doc), check_plan_doc {path}, then document_plan again with doc. Nothing was recorded.`;
+    return `${head}: pass doc, the path of this plan's HTML page. Start one with plan_doc_template {path: "docs/<topic>/<slug>.html", title, brief: the request word for word}, fill it in (get_prompt {name: "plan_doc"}), check_plan_doc {path}, then document_plan again with doc. Nothing was recorded.`;
   return `${head}: ${page.exists ? `${page.path}: ` : ""}${page.errors.join("; ")}. Nothing was recorded.`;
 }
 
@@ -752,6 +764,14 @@ const handlers = {
     });
   },
 
+  get_prompt(args) {
+    const all = prompts();
+    if (!args.name) return ok({ prompts: all.map(({ name, description }) => ({ name, description })) });
+    const p = all.find((x) => x.name === String(args.name).toLowerCase());
+    if (!p) throw new Refused(`unknown prompt: ${args.name} (have: ${all.map((x) => x.name).join(", ")})`);
+    return ok({ name: p.name, description: p.description, text: p.text });
+  },
+
   get_board_summary(args) {
     const board = readBoard();
     const active = ["active", "in_progress", "validating", "blocked", "draft"];
@@ -760,6 +780,7 @@ const handlers = {
       : Object.keys(board.plans).filter((id) => active.includes(board.plans[id].status));
     const mine = (x) => !args.plan_id || x.plan_id === args.plan_id;
     return ok({
+      instructions: INSTRUCTIONS,
       board_path: BOARD_FILE,
       updated_at: board.updated_at,
       hook: HOOK.length ? HOOK.join(" ") : null,
