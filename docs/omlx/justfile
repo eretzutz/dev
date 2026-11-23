@@ -1,30 +1,96 @@
-# Host the local oMLX server on the tailnet with Tailscale Serve.
-# Why this and not a public hostname: cf-tunnel.html, in this folder.
+# Host the local oMLX server for every user of this Mac, and on the tailnet.
+# One server for everybody: shared-model-host.html. The tailnet route, and why
+# not a public hostname: cf-tunnel.html. Both in this folder.
 #
-#   just          list recipes
-#   just up       forward tailnet port 8000 on this Mac to oMLX (idempotent)
-#   just down     stop forwarding; oMLX itself keeps running on loopback
-#   just status   serve config and the origin listener
-#   just check    prove the posture: origin demands a key, URLs answer, nothing is public
-#   just url      print the base URLs to give a client (by name, and by tailnet IP)
+#   just                  list recipes
+#   just daemon-install   run oMLX as a system daemon owned by you: up from boot, whoever logs in (sudo)
+#   just daemon-restart   restart it, e.g. after `brew upgrade omlx` (sudo)
+#   just daemon-uninstall back to the brew login agent (sudo)
+#   just key-add NAME     mint a sub key for a user or device; printed once
+#   just key-list         sub keys by name and fingerprint
+#   just key-rm NAME      revoke a user's or device's sub key
+#   just up               forward tailnet port 8000 on this Mac to oMLX (idempotent)
+#   just down             stop forwarding; oMLX itself keeps running on loopback
+#   just status           serve config, the origin listener, the launchd job
+#   just check            prove the posture: origin demands a key, one server, nothing public
+#   just url              print the base URLs to give a client
 #
-# Nothing here changes oMLX: same bind (127.0.0.1), same port, same launchd job.
-# deps: just, tailscale, python3 (the system 3.9 is enough)
+# oMLX keeps its bind (127.0.0.1), port and settings (~/.omlx). The daemon
+# recipes change only which launchd job starts it, and as whom.
+# deps: just, tailscale, brew, python3 (the system 3.9 is enough)
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 dir := justfile_directory()
 
-# oMLX as it runs today, under the launchd agent sh.brew.omlx.
 ORIGIN_ADDR := "127.0.0.1:8000"
 ORIGIN := "http://" + ORIGIN_ADDR
 # Tailnet-side port. The same number as the origin on purpose: a client's base
 # URL then differs from the local one only in the host.
 PORT := "8000"
+# The system daemon that runs oMLX as you. Not sh.brew.omlx: that label belongs
+# to `brew services`, which would treat this job as its own.
+LABEL := "local.omlx"
+DAEMON_PLIST := "/Library/LaunchDaemons/" + LABEL + ".plist"
+AGENT_PLIST := home_directory() / "Library/LaunchAgents/sh.brew.omlx.plist"
 
 # Show available recipes
 default:
     @just --list --unsorted
+
+# The plist is rendered as you, so it names your account and your settings; a
+# root-owned oMLX would read /var/root/.omlx, which has no key, and answer every
+# request. After the swap the origin guard runs again and, if oMLX would answer
+# without a key, serving to the tailnet is switched off.
+#
+# Run oMLX as a system daemon owned by you: up from boot, whoever logs in (sudo)
+daemon-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'echo "daemon-install stopped. If oMLX is now down, just daemon-uninstall puts the login agent back." >&2' ERR
+    plist="$(mktemp -t omlx-daemon)"
+    trap 'rm -f "$plist"' EXIT
+    python3 {{dir}}/scripts/host.py plist --label {{LABEL}} > "$plist"
+    plutil -lint -s "$plist"
+    sudo -v
+    # One job per port: brew unloads its login agent and removes the plist.
+    if [ -e {{quote(AGENT_PLIST)}} ]; then brew services stop omlx; fi
+    sudo install -m 0644 -o root -g wheel "$plist" {{DAEMON_PLIST}}
+    sudo launchctl bootout system/{{LABEL}} 2>/dev/null || true
+    sudo launchctl bootstrap system {{DAEMON_PLIST}}
+    python3 {{dir}}/scripts/host.py --origin {{ORIGIN}} wait --job system/{{LABEL}}
+    if ! just _origin-guard; then
+        just down
+        echo "oMLX answered without a key; tailnet serving is off until \`just up\` passes" >&2
+        exit 1
+    fi
+    python3 {{dir}}/scripts/check.py --origin {{ORIGIN}} --port {{PORT}} --label {{LABEL}}
+
+# Restart the daemon, e.g. after `brew upgrade omlx` (sudo)
+daemon-restart:
+    sudo launchctl kickstart -k system/{{LABEL}}
+    python3 {{dir}}/scripts/host.py --origin {{ORIGIN}} wait --job system/{{LABEL}}
+    just _origin-guard || { just down; exit 1; }
+
+# Remove the daemon and go back to the brew login agent (sudo)
+daemon-uninstall:
+    sudo launchctl bootout system/{{LABEL}} 2>/dev/null || true
+    sudo rm -f {{DAEMON_PLIST}}
+    brew services start omlx
+    python3 {{dir}}/scripts/host.py --origin {{ORIGIN}} wait --job gui/$(id -u)/sh.brew.omlx
+    just _origin-guard || { just down; exit 1; }
+
+# Mint a sub key for a user or device and print it once (inference only, no admin)
+key-add name:
+    @python3 {{dir}}/scripts/host.py --origin {{ORIGIN}} key-add {{quote(name)}}
+
+# Sub keys by name and fingerprint; the keys themselves are never printed
+key-list:
+    @python3 {{dir}}/scripts/host.py key-list
+
+# Revoke a user's or device's sub key
+key-rm name:
+    @python3 {{dir}}/scripts/host.py --origin {{ORIGIN}} key-rm {{quote(name)}}
 
 # A plain TCP forward, not `--http`: in HTTP mode tailscaled answers only for
 # this Mac's tailnet name and returns 404 to a request addressed to its tailnet
@@ -38,23 +104,30 @@ up: _origin-guard
 down:
     tailscale serve --tcp={{PORT}} off
 
-# Serve config, and what is listening on the origin port
+# Serve config, what is listening on the origin port, and which launchd job runs oMLX
 status:
     #!/usr/bin/env bash
     set -uo pipefail
     tailscale serve status
     echo
     echo "origin listener:"
-    lsof -nP -iTCP:{{PORT}} -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print "  " $1, $9}'
+    lsof -nP -iTCP:{{PORT}} -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print "  " $1, $2, $9}'
+    echo
+    echo "launchd job:"
+    for target in system/{{LABEL}} gui/$(id -u)/sh.brew.omlx; do
+        launchctl print "$target" 2>/dev/null \
+            | awk -v t="$target" '/^\tstate = /{s=$3} /^\tpid = /{p=" pid " $3} END{if (s) print "  " t, s p}'
+    done
 
-# Every check: origin posture, serve config, Funnel off, the tailnet URLs (set OMLX_CHECK_KEY to test with a key)
+# Every check: origin posture, the launchd job, other oMLX servers, serve config, Funnel off, the tailnet URLs (set OMLX_CHECK_KEY to test with a key)
 check:
-    python3 {{dir}}/scripts/check.py --origin {{ORIGIN}} --port {{PORT}}
+    python3 {{dir}}/scripts/check.py --origin {{ORIGIN}} --port {{PORT}} --label {{LABEL}}
 
-# The base URLs an OpenAI-compatible client on another tailnet device can use
+# The base URLs to give a client: on this Mac, and on another tailnet device
 url:
     #!/usr/bin/env bash
     set -euo pipefail
+    echo "this Mac  {{ORIGIN}}/v1   (every user of this Mac)"
     tailscale status --json | python3 -c '
     import json, sys
     me = json.load(sys.stdin)["Self"]
@@ -65,6 +138,7 @@ url:
     '
 
 # A leading underscore keeps a recipe out of `just --list`. This is the gate on
-# `up`: oMLX trusts loopback peers, and serve makes every tailnet device one.
+# `up` and on every daemon change: oMLX trusts loopback peers, and serve makes
+# every tailnet device one.
 _origin-guard:
     python3 {{dir}}/scripts/check.py --origin {{ORIGIN}} --port {{PORT}} --origin-only

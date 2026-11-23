@@ -17,6 +17,11 @@ for this Mac's tailnet name and gives 404 to a request addressed to its tailnet
 IP; the IP is what a device falls back to when its MagicDNS is not resolving.
 Both forms of the URL are requested here.
 
+The same server is shared by every user of this Mac (shared-model-host.html).
+The host checks say which launchd job answers on the origin port, and name any
+other oMLX server on the Mac: each one holds its own copy of every model it
+loads, so one server for everybody is the point.
+
 These run on the Mac that hosts oMLX. They cannot tell you whether another
 device resolves the name; on that device, compare the name with the IP.
 
@@ -34,16 +39,47 @@ The key is read from the environment, never from argv, and is never printed.
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
 import os
+import plistlib
+import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
 
-SETTINGS = os.path.expanduser("~/.omlx/settings.json")
+
+def base_path() -> str:
+    """Where oMLX keeps settings.json, resolved the way oMLX 0.8.0 does it.
+
+    OMLX_BASE_PATH, else the macOS app's bootstrap file, else ~/.omlx
+    (settings.py, resolve_default_base_path).
+    """
+    env_value = os.environ.get("OMLX_BASE_PATH")
+    if env_value:
+        return os.path.realpath(os.path.expanduser(env_value))
+    bootstrap = os.path.expanduser("~/Library/Application Support/oMLX/base-path")
+    try:
+        with open(bootstrap, encoding="utf-8") as handle:
+            raw = handle.readline().strip()
+    except OSError:
+        raw = ""
+    return os.path.realpath(os.path.expanduser(raw or "~/.omlx"))
+
+
+BASE = base_path()
+SETTINGS = os.path.join(BASE, "settings.json")
 MIN_KEY_LENGTH = 32  # oMLX itself only asks for 4 characters
+
+# launchd jobs that can run oMLX on this Mac. The daemon is the one
+# `just daemon-install` writes; the agent is what `brew services start omlx` writes.
+DAEMON_LABEL = "local.omlx"
+AGENT_LABEL = "sh.brew.omlx"
+AGENT_PLIST = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % AGENT_LABEL)
+# The process title oMLX gives its server, from Homebrew and from oMLX.app alike.
+SERVER_PROCESS = re.compile(r"(^|/)omlx-server\b|\bomlx(-cli)? serve\b")
 
 # A system proxy must not sit between this script and loopback or the tailnet.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -127,8 +163,8 @@ def check_origin(origin: str, port: str) -> None:
         report("FAIL", "settings", "no main API key is set")
     sub_keys = auth.get("sub_keys") or []
     if not sub_keys:
-        report("warn", "keys", "no sub keys yet: remote devices would have to use the main "
-               "key, which is also the admin credential")
+        report("warn", "keys", "no sub keys yet: other users and devices would have to use the "
+               "main key, which is also the admin credential (just key-add <name>)")
     for entry in sub_keys:
         key = entry.get("key", "")
         name = entry.get("name") or "(unnamed)"
@@ -230,6 +266,130 @@ def check_tailnet_urls(bases: list[str]) -> None:
            % (fingerprint(key), len(models), ", ".join(models) or "(none)"))
 
 
+def tcp_listeners() -> tuple[dict[int, list[str]], str]:
+    """pid -> the TCP addresses it listens on, for every user's processes; and an error.
+
+    netstat sees other users' sockets without sudo; lsof does not. Its process
+    column is "name:pid" and the name may contain spaces, so the pid is matched
+    from the right, just before the 5-digit state column. A read of the socket
+    table can come back empty while it changes underneath, so it is retried.
+    """
+    error = "no listening sockets parsed"
+    for _ in range(3):
+        rc, out = run("netstat", "-anv", "-p", "tcp")
+        found: dict[int, list[str]] = {}
+        for line in out.splitlines() if rc == 0 else []:
+            fields = line.split()
+            if len(fields) < 6 or fields[5] != "LISTEN":
+                continue
+            match = re.search(r":(\d+)\s+[0-9a-f]{5}\s", line)
+            if not match:
+                continue
+            host, _, port = fields[3].rpartition(".")
+            found.setdefault(int(match.group(1)), []).append("%s:%s" % (host, port))
+        if found:
+            return found, ""
+        error = out.strip()[:120] if rc != 0 else error
+    return {}, error
+
+
+def listener_pid(addr: str) -> int | None:
+    """The pid listening on host:port: lsof first (this user's processes, which is
+    where oMLX runs), then netstat (anyone's)."""
+    host, _, port = addr.rpartition(":")
+    rc, out = run("lsof", "-t", "-nP", "-iTCP@%s:%s" % (host, port), "-sTCP:LISTEN")
+    pids = [int(word) for word in out.split() if word.isdigit()] if rc == 0 else []
+    if pids:
+        return pids[0]
+    listeners, _ = tcp_listeners()
+    return next((pid for pid, addrs in listeners.items() if addr in addrs), None)
+
+
+def processes() -> dict[int, tuple[int, str, str]]:
+    """pid -> (ppid, user, command) for every process on the Mac."""
+    rc, out = run("ps", "-axo", "pid=,ppid=,user=,command=")
+    table: dict[int, tuple[int, str, str]] = {}
+    for line in out.splitlines() if rc == 0 else []:
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit():
+            table[int(parts[0])] = (int(parts[1]), parts[2], parts[3].strip())
+    return table
+
+
+def launchd_pid(target: str) -> int | None:
+    """The pid of a launchd job (system/<label> or gui/<uid>/<label>), if it runs.
+
+    `launchctl print` needs no sudo for either domain.
+    """
+    rc, out = run("launchctl", "print", target)
+    match = re.search(r"^\tpid = (\d+)$", out, re.M) if rc == 0 else None
+    return int(match.group(1)) if match else None
+
+
+def check_host(origin_addr: str, label: str) -> None:
+    """Which launchd job serves the origin, and which other oMLX servers run here."""
+    me = getpass.getuser()
+    # Ports of other users' servers are a courtesy: run under `just`, netstat on
+    # macOS lists no TCP sockets at all (seen on Darwin 27.2, just 1.59), so the
+    # servers are found by process title and only decorated with ports when it can.
+    listeners, _ = tcp_listeners()
+    procs = processes()
+    origin_pid = listener_pid(origin_addr)
+    if origin_pid is None:
+        report("FAIL", "host", "no process listens on %s" % origin_addr)
+    else:
+        owner = procs.get(origin_pid, (0, "?", ""))[1]
+        if owner != me:
+            report("FAIL", "host", "%s belongs to %s's process %d; the settings and keys "
+                   "checked here are %s's" % (origin_addr, owner, origin_pid, me))
+
+    daemon_plist = "/Library/LaunchDaemons/%s.plist" % label
+    has_daemon = os.path.exists(daemon_plist)
+    has_agent = os.path.exists(AGENT_PLIST)
+    if has_daemon and has_agent:
+        report("FAIL", "host", "both the system daemon %s and the login agent %s are installed: "
+               "two jobs for one port (brew services stop omlx)" % (label, AGENT_LABEL))
+
+    if has_daemon:
+        try:
+            with open(daemon_plist, "rb") as handle:
+                spec = plistlib.load(handle)
+        except (OSError, plistlib.InvalidFileException, ValueError) as error:
+            report("FAIL", "host", "cannot read %s: %s" % (daemon_plist, error))
+            spec = {}
+        user = spec.get("UserName")
+        if spec and user != me:
+            report("FAIL", "host", "%s runs oMLX as %s, not %s: it reads that account's settings "
+                   "and keys, not the ones checked here" % (daemon_plist, user or "root", me))
+        base = (spec.get("EnvironmentVariables") or {}).get("OMLX_BASE_PATH")
+        if spec and (not base or os.path.realpath(base) != BASE):
+            report("FAIL", "host", "%s sets OMLX_BASE_PATH to %s; these checks read %s"
+                   % (daemon_plist, base or "nothing", BASE))
+        pid = launchd_pid("system/" + label)
+        if pid is not None and pid == origin_pid:
+            report("ok", "host", "oMLX is the system daemon %s, running as %s: up from boot, "
+                   "whoever is logged in" % (label, me))
+        else:
+            report("FAIL", "host", "the system daemon %s is not what answers on %s (daemon pid %s, "
+                   "listener pid %s)" % (label, origin_addr, pid, origin_pid))
+    elif has_agent:
+        pid = launchd_pid("gui/%d/%s" % (os.getuid(), AGENT_LABEL))
+        where = "pid %d" % pid if pid else "not running"
+        report("warn", "host", "oMLX is the login agent %s (%s): after a reboot it is down until "
+               "%s logs in (just daemon-install)" % (AGENT_LABEL, where, me))
+    else:
+        report("warn", "host", "no launchd job runs oMLX (neither %s nor %s)"
+               % (daemon_plist, AGENT_PLIST))
+
+    for pid, (_, user, command) in sorted(procs.items()):
+        if pid == origin_pid or not SERVER_PROCESS.search(command):
+            continue
+        ports = ", ".join(sorted(listeners.get(pid, [])))
+        report("warn", "servers", "%s runs another oMLX server (pid %d%s): a second copy of "
+               "every model it loads. Give %s a sub key (just key-add %s) and point them at "
+               "http://%s/v1" % (user, pid, ", " + ports if ports else "", user, user, origin_addr))
+
+
 def check_power() -> None:
     rc, out = run("pmset", "-g")
     for line in out.splitlines() if rc == 0 else []:
@@ -247,11 +407,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--origin", default="http://127.0.0.1:8000", help="where oMLX listens")
     parser.add_argument("--port", default="8000", help="the tailnet-side port")
-    parser.add_argument("--origin-only", action="store_true", help="skip the tailnet checks")
+    parser.add_argument("--label", default=DAEMON_LABEL, help="the oMLX LaunchDaemon's label")
+    parser.add_argument("--origin-only", action="store_true",
+                        help="skip the host and tailnet checks")
     args = parser.parse_args()
 
     check_origin(args.origin, args.origin.rsplit(":", 1)[-1])
     if not args.origin_only:
+        check_host(args.origin.split("://", 1)[-1], args.label)
         check_tailnet_urls(check_serve(args.origin, args.port))
         check_power()
 

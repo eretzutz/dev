@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "board": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/mcp-board/server.mjs"],
+      "env": {
+        "MCP_BOARD_PATH": "/ABSOLUTE/PATH/TO/your-project/.mcp-board"
+      }
+    }
+  }
+}

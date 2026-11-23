@@ -1,3 +1,801 @@
+<!--
 - document here in html, with left/right nav panels, dataflow/process diagram motion/animation, the plan to setup omlx models folder and host to be accessible for all users on this macos
 - use rust/python/justfile tooling as usual
+- measured read-only on the Mac Studio (96 GiB), 20 Nov 2026: three oMLX servers were running.
+  steve: oMLX 0.8.0 (Homebrew), login agent sh.brew.omlx, 127.0.0.1:8000.
+  phil: 127.0.0.1:8002, and nate: 127.0.0.1:8003, each started by their own oMLX.app.
+  Models: 126 GB in /Users/steve/.omlx/models (16, 19 and 91 GB); /Users/steve is not
+  readable by other users. /Users/Shared/omlx/models existed, root:staff 775, empty.
+- a first attempt (another agent, same day) added `just config-shared`, which wrote a
+  top-level "model_path" key that oMLX 0.8.0 does not read, and planned to copy the
+  Homebrew plist into /Library/LaunchDaemons, which would have run oMLX as root with no
+  API key behind the live tailnet forward. Both replaced; see "What the first attempt got wrong".
+- DECIDED 20 Nov 2026: one server for every user, not a shared models folder. oMLX runs
+  as the system daemon local.omlx with UserName steve and steve's settings; each user gets
+  a sub key for http://127.0.0.1:8000/v1 (just key-add). Models stay where they are.
+- BUILT 20 Nov 2026, uncommitted:
+  justfile: daemon-install / daemon-restart / daemon-uninstall, key-add / key-list / key-rm;
+  status, url and check extended; config-shared removed. Every daemon recipe ends with the
+  origin guard and runs `just down` if oMLX would answer without a key.
+  scripts/host.py (new): renders the LaunchDaemon plist as the admin (UserName, HOME, USER,
+  OMLX_BASE_PATH explicit; refuses as root or for settings with no key or key checks off);
+  waits for the daemon's own pid on the origin; mints and revokes sub keys via the admin API.
+  scripts/check.py: settings path resolved as oMLX does; new "host" and "servers" checks.
+  Tested without sudo: just check passes; plist lints; key round trip on the live server
+  (sub key 200 on /v1/models, 401 on the admin API, duplicate name refused, 401 after key-rm;
+  settings.json intact). Found: run under just, macOS netstat lists no TCP sockets, so other
+  servers' ports are best-effort and the origin pid comes from lsof.
+  Not yet done: daemon-install (sudo), a prompt through the daemon (GPU), keys for phil and
+  nate, their switch-over, sudo rmdir /Users/Shared/omlx. cf-tunnel.html updated to point here.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>One oMLX server for every user of this Mac &middot; Implementation plan</title>
+<meta name="description" content="Three users were each running their own oMLX server on the Mac Studio, each holding its own copy of every model it loaded. The plan: one oMLX server, started at boot as a system daemon owned by the admin, reached by every user at 127.0.0.1:8000 with their own sub key. The models folder stays where it is." />
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #57606a;
+    --accent: #2563eb;
+    --border: #d8dee4;
+    --code-bg: #f5f7fa;
+    --head-bg: #f0f3f6;
+    --panel: #ffffff;
+    --warn: #9a3412;
+    --warn-bg: #fff7ed;
+    --ok: #15803d;
+    --ok-bg: #f0fdf4;
+    --bad: #b91c1c;
+    --bad-bg: #fef2f2;
+    --unk: #a16207;
+    --unk-bg: #fefce8;
+    --req: #2563eb;
+    --res: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --accent: #6ea8fe;
+      --border: #30363d;
+      --code-bg: #161b22;
+      --head-bg: #161b22;
+      --panel: #11161d;
+      --warn: #fdba74;
+      --warn-bg: #2a1c0f;
+      --ok: #86efac;
+      --ok-bg: #10231a;
+      --bad: #fca5a5;
+      --bad-bg: #2a1215;
+      --unk: #fde68a;
+      --unk-bg: #2a2410;
+      --req: #6ea8fe;
+      --res: #86efac;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .progress {
+    position: fixed; inset: 0 0 auto 0; height: 3px; z-index: 10;
+    background: var(--accent); transform-origin: 0 50%; transform: scaleX(0);
+  }
+  .shell {
+    display: grid;
+    grid-template-columns: 15rem minmax(0, 1fr) 17.5rem;
+    gap: 2.75rem;
+    max-width: 94rem;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 6rem;
+  }
+  .rail { position: sticky; top: 1.5rem; align-self: start; max-height: calc(100vh - 3rem); overflow-y: auto; font-size: .88em; }
+  .rail h2 { font-size: .74em; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); border: 0; margin: 0 0 .7em; padding: 0; }
+  .left nav ol { list-style: none; margin: 0; padding: 0; counter-reset: sec; }
+  .left nav > ol > li { counter-increment: sec; }
+  .left nav a {
+    display: block; padding: .28em .7em; margin: 1px 0;
+    color: var(--muted); text-decoration: none;
+    border-left: 2px solid var(--border); line-height: 1.4;
+    transition: color .2s ease, border-color .2s ease, background .2s ease;
+  }
+  .left nav > ol > li > a::before { content: counter(sec) ". "; font-variant-numeric: tabular-nums; }
+  .left nav ol ol a { padding-left: 1.6em; font-size: .94em; }
+  .left nav a:hover { color: var(--fg); }
+  .left nav a[aria-current="true"] { color: var(--accent); border-left-color: var(--accent); background: var(--code-bg); font-weight: 600; }
+  .rail-tools { margin-top: 1.4em; padding-top: 1em; border-top: 1px solid var(--border); }
+  .rail-tools button {
+    font: inherit; font-size: .95em; cursor: pointer; width: 100%;
+    color: var(--fg); background: var(--code-bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: .45em .7em;
+  }
+  .rail-tools button:hover { border-color: var(--accent); }
+  .rail-tools p { margin: .5em 0 0; color: var(--muted); font-size: .9em; line-height: 1.45; }
+  .right .card { border: 1px solid var(--border); border-radius: 8px; padding: .8em .95em; margin: 0 0 1em; background: var(--panel); }
+  .right .card h3 { font-size: .98em; margin: 0 0 .35em; }
+  .right dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .2em .7em; line-height: 1.45; }
+  .right dt { color: var(--muted); }
+  .right dd { margin: 0; overflow-wrap: anywhere; }
+  .right ul { margin: .2em 0; padding-left: 1.1em; line-height: 1.45; }
+  .right li { margin: .25em 0; overflow-wrap: anywhere; }
+  .right code { font-size: .86em; }
+  .legend { display: grid; gap: .35em; }
+  .legend span { display: inline-flex; align-items: center; gap: .5em; }
+  .swatch { width: 1.6em; height: .7em; border-radius: 3px; display: inline-block; flex: none; }
+  main { min-width: 0; }
+  h1, h2, h3, h4 { line-height: 1.25; font-weight: 650; }
+  h1 { font-size: 2.05em; margin: 0 0 .3em; }
+  main h2 { font-size: 1.42em; margin: 2.6em 0 .6em; padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+  main h3 { font-size: 1.12em; margin: 1.9em 0 .5em; }
+  h4 { font-size: .98em; margin: 1.4em 0 .4em; color: var(--muted); }
+  p, li { margin: .5em 0; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: .12em .38em; border-radius: 4px; font-size: .88em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1em 1.2em; overflow-x: auto; font-size: .84em; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  pre .add { color: var(--ok); }
+  pre .del { color: var(--bad); }
+  pre .cm { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .9em; }
+  th, td { border: 1px solid var(--border); padding: .45em .7em; text-align: left; vertical-align: top; }
+  th { background: var(--head-bg); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  .lede { color: var(--muted); font-size: 1.06em; margin-bottom: 1.4em; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4em; margin: 0 0 2em; }
+  .note, .warn, .decision {
+    border-left: 3px solid var(--accent); background: var(--code-bg);
+    padding: .8em 1em; margin: 1.2em 0; border-radius: 0 6px 6px 0;
+  }
+  .warn { border-left-color: var(--warn); background: var(--warn-bg); }
+  .decision { border-left-color: var(--ok); background: var(--ok-bg); }
+  .small { font-size: .88em; color: var(--muted); }
+  .phase { border: 1px solid var(--border); border-radius: 8px; padding: .9em 1.2em; margin: 1.2em 0; }
+  .phase h3, .phase h4 { margin-top: 0; }
+  .phase .done-when { margin: .7em 0 0; padding: .6em .9em; border-radius: 6px; background: var(--code-bg); }
+  .phase .status { margin: 0 0 .7em; padding: .6em .9em; border-radius: 6px; background: var(--ok-bg); color: var(--ok); }
+  .tag {
+    display: inline-block; font-size: .72em; font-weight: 650; letter-spacing: .03em;
+    text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: .08em .65em; vertical-align: middle;
+  }
+  .tag.ok { color: var(--ok); border-color: currentColor; background: var(--ok-bg); }
+  .tag.bad { color: var(--bad); border-color: currentColor; background: var(--bad-bg); }
+  .tag.unk { color: var(--unk); border-color: currentColor; background: var(--unk-bg); }
+  .tag.acc { color: var(--accent); border-color: currentColor; }
+  td .tag { white-space: nowrap; }
+  figure.diagram { margin: 1.6em 0; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 1em 1em .6em; }
+  figure.diagram svg { display: block; width: 100%; height: auto; overflow: visible; }
+  @media (max-width: 720px) {
+    figure.diagram { overflow-x: auto; }
+    figure.diagram svg { min-width: 680px; }
+  }
+  figure.diagram figcaption { color: var(--muted); font-size: .86em; margin-top: .6em; line-height: 1.5; }
+  svg text { fill: var(--fg); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  svg text.sub { fill: var(--muted); font-size: 11.5px; }
+  svg text.lane { fill: var(--muted); font-size: 11px; letter-spacing: .14em; font-weight: 650; }
+  svg text.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  svg text.lbl { fill: var(--muted); font-size: 11px; }
+  svg .node rect { fill: var(--code-bg); stroke: var(--border); stroke-width: 1.5; }
+  svg .node.ok rect { stroke: var(--ok); }
+  svg .node.bad rect { stroke: var(--bad); fill: var(--bad-bg); }
+  svg .node.unk rect { stroke: var(--unk); fill: var(--unk-bg); }
+  svg .node.acc rect { stroke: var(--accent); }
+  svg .group { fill: none; stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 4 5; }
+  svg .wire { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+  svg .axis { stroke: var(--border); stroke-width: 2; }
+  svg .flow { fill: none; stroke-width: 2; stroke-dasharray: 6 6; animation: march 1s linear infinite; }
+  svg .flow.req { stroke: var(--req); }
+  svg .flow.res { stroke: var(--res); }
+  svg .flow.bad { stroke: var(--bad); animation-duration: 2.4s; }
+  svg .flow.par { stroke: var(--muted); }
+  svg .arrowhead { fill: var(--muted); }
+  svg .packet.req { fill: var(--req); }
+  svg .packet.res { fill: var(--res); }
+  svg .packet.bad { fill: var(--bad); }
+  svg .packet.tok2 { fill: var(--unk); }
+  svg .cross { fill: var(--bad); font-weight: 700; }
+  svg .dot-ka { fill: var(--unk); }
+  svg .dot-tok { fill: var(--res); }
+  svg .pulse { animation: pulse 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+  @keyframes march { to { stroke-dashoffset: -12; } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  .paused svg .flow, .paused svg .pulse { animation-play-state: paused; }
+  @media (prefers-reduced-motion: reduce) {
+    svg .flow, svg .pulse { animation: none; }
+    svg .packet { display: none; }
+  }
+  @media (max-width: 1240px) {
+    .shell { grid-template-columns: 14rem minmax(0, 1fr); }
+    .right { grid-column: 2; position: static; max-height: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0 1em; }
+    .right > h2 { grid-column: 1 / -1; }
+  }
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: minmax(0, 1fr); padding: 1.5rem 1.1rem 4rem; gap: 1.5rem; }
+    .left { position: static; max-height: none; border: 1px solid var(--border); border-radius: 8px; padding: .8em 1em; }
+    .left nav a { border-left: 0; padding: .18em 0; }
+    .left nav ol ol a { padding-left: 1.2em; }
+    .right { grid-column: 1; }
+  }
+  @media print {
+    :root {
+      --bg: #fff; --fg: #000; --muted: #444; --accent: #000; --border: #999; --code-bg: #fff; --head-bg: #eee;
+      --panel: #fff; --warn: #000; --warn-bg: #fff; --ok: #000; --ok-bg: #fff; --bad: #000; --bad-bg: #fff; --unk: #000; --unk-bg: #fff;
+    }
+    .progress, .left, .rail-tools { display: none; }
+    .shell { display: block; padding: 0; max-width: none; }
+    .right { position: static; max-height: none; display: block; }
+    body { font-size: 10.5pt; line-height: 1.5; }
+    svg .packet { display: none; }
+    h2, h3, h4 { break-after: avoid; }
+    table, pre, .phase, .note, .warn, .decision, figure { break-inside: avoid; }
+  }
+</style>
+<style>
+  .bars rect.cap { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  .bars rect.m27 { fill: var(--req); opacity: .85; }
+  .bars rect.m31 { fill: var(--res); opacity: .85; }
+  .bars rect.dup { fill: var(--bad); }
+  ol.steps { padding-left: 1.4em; }
+  ol.steps > li { margin: .7em 0; }
+</style>
+</head>
+<body>
+<div class="progress" id="progress" aria-hidden="true"></div>
 
+<div class="shell">
+
+<!-- ================= LEFT: contents ================= -->
+<aside class="rail left" aria-label="Contents">
+  <h2>Contents</h2>
+  <nav>
+    <ol>
+      <li><a href="#summary">Summary</a></li>
+      <li><a href="#why">Why one server, not one folder</a></li>
+      <li><a href="#flow">Data flow</a></li>
+      <li><a href="#process">Process</a></li>
+      <li><a href="#doit">Doing it</a>
+        <ol>
+          <li><a href="#admin">You, once</a></li>
+          <li><a href="#users">Each other user</a></li>
+        </ol>
+      </li>
+      <li><a href="#tooling">Tooling: just, Python, Rust</a></li>
+      <li><a href="#verified">What is verified</a></li>
+      <li><a href="#first">What the first attempt got wrong</a></li>
+      <li><a href="#limits">Limits and risks</a></li>
+      <li><a href="#files">Files</a></li>
+      <li><a href="#open">Open questions</a></li>
+    </ol>
+  </nav>
+  <div class="rail-tools">
+    <button type="button" id="anim-toggle" aria-pressed="false">Pause diagrams</button>
+    <p>Diagrams start paused when your system asks for reduced motion.</p>
+  </div>
+</aside>
+
+<!-- ================= CENTER: document ================= -->
+<main>
+
+<h1>One oMLX server for every user of this Mac</h1>
+<p class="lede">
+  Three people were running oMLX on the Mac Studio at once: your server on
+  <code>127.0.0.1:8000</code>, phil&rsquo;s on <code>:8002</code> and nate&rsquo;s on
+  <code>:8003</code>. Every oMLX server loads each model it serves into its own
+  memory, so three servers can hold three copies of the same model in the Mac&rsquo;s
+  96&nbsp;GiB. The plan is to run one server, start it at boot as a system daemon
+  owned by your account, and give every user a key of their own for
+  <code>http://127.0.0.1:8000/v1</code>. The models folder does not move.
+</p>
+<div class="meta">
+  <span class="tag">Plan</span>
+  <span class="tag">Planned 20 Nov 2026</span>
+  <span class="tag">from the stub in this file</span>
+  <span class="tag ok">tooling built &middot; keys tested on the live server</span>
+  <span class="tag unk">daemon not installed yet &middot; needs your sudo</span>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="summary">Summary</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th></th><th>Today</th><th>What we found</th><th>Plan</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Memory</strong><br /><span class="tag bad">waste</span></td>
+      <td>Three oMLX servers: yours (Homebrew 0.8.0), and phil&rsquo;s and nate&rsquo;s, each started by their own <code>oMLX.app</code>.</td>
+      <td>Each server keeps its own copy of the weights of every model it loads. The three models here are 16, 19 and 91&nbsp;GB on disk; the Mac has 96&nbsp;GiB in all.</td>
+      <td>One server. phil and nate stop theirs and call yours.</td>
+    </tr>
+    <tr>
+      <td><strong>Models</strong><br /><span class="tag ok">fine</span></td>
+      <td>126&nbsp;GB in <code>/Users/steve/.omlx/models</code>. Your home folder is not readable by other users.</td>
+      <td>With one server, only that server reads the model files. Nobody else needs to see the folder.</td>
+      <td>Leave the models where they are. Remove the empty <code>/Users/Shared/omlx</code> left by the first attempt.</td>
+    </tr>
+    <tr>
+      <td><strong>Staying up</strong><br /><span class="tag unk">gap</span></td>
+      <td>Your server is a login agent, <code>sh.brew.omlx</code>.</td>
+      <td>After a reboot it does not run until <em>you</em> log in, even if phil is already logged in.</td>
+      <td>The system daemon <code>local.omlx</code>: it starts at boot and runs as you, with your settings and keys.</td>
+    </tr>
+    <tr>
+      <td><strong>Keys</strong><br /><span class="tag unk">gap</span></td>
+      <td>No sub keys. The main key is also the admin credential.</td>
+      <td>oMLX accepts sub keys for inference and refuses them for the admin API and the dashboard.</td>
+      <td>One sub key per user and per device (<code>just key-add phil</code>). Only you hold the main key.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="decision">
+  <strong>Decided 20 Nov 2026: one server for everybody, not a shared models folder.</strong>
+  A shared folder saves disk space, but every server would still keep its own copy of
+  each model in memory, and memory is what runs out on this Mac. One server keeps one
+  copy, shares the prompt cache, and lets the scheduler and memory guard see all the
+  load. Everyone else connects over loopback with a key of their own.
+</div>
+
+<!-- ======================================================= -->
+<h2 id="why">Why one server, not one folder</h2>
+<p>
+  This is an example, not a measurement: phil and you both on the 27B model, nate on
+  gemma. The bars show weights only, using on-disk sizes; the KV cache comes on top.
+</p>
+<figure class="diagram">
+<svg class="anim bars" viewBox="0 0 920 204" role="img" aria-labelledby="dM-t dM-d">
+  <title id="dM-t">Weights in memory: three servers against one</title>
+  <desc id="dM-d">Two bars against the Mac's 96 GiB. Three servers: the 27B model twice (16 GB each, the second copy marked as a duplicate) and gemma once, 51 GB. One server: the 27B model once and gemma once, 35 GB.</desc>
+  <text class="lane" x="10" y="22">THREE SERVERS (TODAY)</text>
+  <rect class="cap" x="10" y="34" width="690" height="34" rx="4" />
+  <rect class="m27" x="10" y="34" width="115" height="34" rx="4" />
+  <rect class="dup pulse" x="125" y="34" width="115" height="34" />
+  <rect class="m31" x="240" y="34" width="137" height="34" />
+  <text class="sub" x="67" y="88" text-anchor="middle">27B, yours, 16</text>
+  <text class="sub" x="182" y="88" text-anchor="middle">27B again, phil, 16</text>
+  <text class="sub" x="308" y="88" text-anchor="middle">gemma, nate, 19</text>
+  <text x="712" y="56">51 GB of 96 GiB</text>
+
+  <text class="lane" x="10" y="128">ONE SERVER (PLAN)</text>
+  <rect class="cap" x="10" y="140" width="690" height="34" rx="4" />
+  <rect class="m27" x="10" y="140" width="115" height="34" rx="4" />
+  <rect class="m31" x="125" y="140" width="137" height="34" />
+  <text class="sub" x="67" y="194" text-anchor="middle">27B, shared, 16</text>
+  <text class="sub" x="193" y="194" text-anchor="middle">gemma, shared, 19</text>
+  <text x="712" y="162">35 GB of 96 GiB</text>
+
+</svg>
+<figcaption>
+  Scale: the bar outline is 96&nbsp;GiB. Red is the copy a second server adds. The
+  91&nbsp;GB Qwen3.8-Flash-Next fits in one server at most, and with three servers it
+  cannot load while any other server holds a model. One
+  server also has one memory guard (<code>memory_guard_tier: aggressive</code>), which
+  can only protect the Mac if it sees all of the load.
+</figcaption>
+</figure>
+<p>
+  Another reason: your home folder is <code>drwxr-x---</code>, so other users cannot
+  read your model files. That is why someone would think of a shared folder. With one
+  server running as you, they never need to read the files.
+</p>
+
+<!-- ======================================================= -->
+<h2 id="flow">Data flow</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 380" role="img" aria-labelledby="dA-t dA-d">
+  <title id="dA-t">Every user and device reaches the one oMLX server</title>
+  <desc id="dA-d">Left: three users of this Mac, steve with the main key and phil and nate with their own sub keys, call oMLX over loopback at 127.0.0.1:8000. Below them, another tailnet device calls the Mac's tailnet port 8000, and tailscaled forwards it to the same loopback port. Right, inside the launchd system domain: the daemon local.omlx starts oMLX at boot as steve; oMLX reads steve's settings for the keys and the models folder, which holds 126 GB and one copy of each loaded model in memory. Bottom right: phil's and nate's own servers on ports 8002 and 8003 are stopped.</desc>
+  <defs>
+    <marker id="dA-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+
+  <text class="lane" x="10" y="20">USERS OF THIS MAC</text>
+  <text class="lane" x="10" y="292">TAILNET</text>
+  <text class="lane" x="452" y="20">MAC STUDIO &mdash; LAUNCHD SYSTEM DOMAIN</text>
+  <rect class="group" x="440" y="30" width="477" height="256" rx="10" />
+
+  <path class="flow req" d="M200,68 H380 V170 H468" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M200,138 H360 V195 H468" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M200,208 H340 V220 H468" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M200,328 H248" marker-end="url(#dA-arrow)" />
+  <path class="flow req" d="M400,328 H430 V245 H468" marker-end="url(#dA-arrow)" />
+  <text class="sub" x="300" y="262" text-anchor="middle">127.0.0.1:8000, each with own key</text>
+
+  <g class="node acc"><rect x="10" y="40" width="190" height="56" rx="8" /><text x="105" y="64" text-anchor="middle">steve</text><text class="sub" x="105" y="81" text-anchor="middle">main key: API and admin</text></g>
+  <g class="node"><rect x="10" y="110" width="190" height="56" rx="8" /><text x="105" y="134" text-anchor="middle">phil</text><text class="sub mono" x="105" y="151" text-anchor="middle">sub key &ldquo;phil&rdquo;</text></g>
+  <g class="node"><rect x="10" y="180" width="190" height="56" rx="8" /><text x="105" y="204" text-anchor="middle">nate</text><text class="sub mono" x="105" y="221" text-anchor="middle">sub key &ldquo;nate&rdquo;</text></g>
+  <g class="node"><rect x="10" y="300" width="190" height="56" rx="8" /><text x="105" y="324" text-anchor="middle">another tailnet device</text><text class="sub" x="105" y="341" text-anchor="middle">its own sub key</text></g>
+  <g class="node acc"><rect x="250" y="300" width="150" height="56" rx="8" /><text x="325" y="324" text-anchor="middle">tailscaled</text><text class="sub" x="325" y="341" text-anchor="middle">serve :8000, Funnel off</text></g>
+
+  <g class="node acc"><rect x="462" y="46" width="196" height="62" rx="8" /><text x="560" y="72" text-anchor="middle">launchd: local.omlx</text><text class="sub" x="560" y="90" text-anchor="middle">LaunchDaemon, runs as steve</text></g>
+  <path class="wire" d="M560,108 V148" marker-end="url(#dA-arrow)" />
+  <text class="lbl" x="568" y="134">starts at boot</text>
+  <g class="node unk"><rect x="470" y="150" width="180" height="120" rx="8" /><text x="560" y="190" text-anchor="middle">oMLX 0.8.0</text><text class="sub mono" x="560" y="208" text-anchor="middle">127.0.0.1:8000</text><text class="sub" x="560" y="226" text-anchor="middle">checks every key</text><text class="sub" x="560" y="244" text-anchor="middle">one queue, one guard</text></g>
+  <path class="wire" d="M650,178 H718" marker-end="url(#dA-arrow)" />
+  <path class="wire" d="M650,240 H718" marker-end="url(#dA-arrow)" />
+  <g class="node"><rect x="720" y="150" width="185" height="56" rx="8" /><text x="812" y="174" text-anchor="middle">~/.omlx/settings.json</text><text class="sub" x="812" y="191" text-anchor="middle">main key, sub keys</text></g>
+  <g class="node"><rect x="720" y="214" width="185" height="56" rx="8" /><text x="812" y="238" text-anchor="middle">~/.omlx/models</text><text class="sub" x="812" y="255" text-anchor="middle">126 GB, read by oMLX only</text></g>
+
+  <g class="node bad"><rect x="470" y="300" width="435" height="56" rx="8" /><text x="687" y="324" text-anchor="middle">phil&rsquo;s :8002 and nate&rsquo;s :8003 servers: stopped</text><text class="sub" x="687" y="341" text-anchor="middle">their oMLX.app no longer starts a server</text></g>
+  <text class="cross" x="482" y="333">&#10005;</text>
+
+  <circle class="packet req" r="5"><animateMotion dur="6s" repeatCount="indefinite" path="M105,68 H380 V170 H560" keyPoints="0;1;1" keyTimes="0;0.45;1" calcMode="linear" /></circle>
+  <circle class="packet res" r="4" opacity="0">
+    <animateMotion dur="6s" repeatCount="indefinite" path="M105,68 H380 V170 H560" keyPoints="1;1;0;0" keyTimes="0;0.5;0.95;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="6s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.5;0.51;0.95;1" />
+  </circle>
+  <circle class="packet req" r="5"><animateMotion dur="6s" begin="-4.5s" repeatCount="indefinite" path="M105,138 H360 V195 H560" keyPoints="0;1;1" keyTimes="0;0.45;1" calcMode="linear" /></circle>
+  <circle class="packet req" r="5"><animateMotion dur="6s" begin="-3s" repeatCount="indefinite" path="M105,208 H340 V220 H560" keyPoints="0;1;1" keyTimes="0;0.45;1" calcMode="linear" /></circle>
+  <circle class="packet req" r="5"><animateMotion dur="6s" begin="-1.5s" repeatCount="indefinite" path="M105,328 H430 V245 H560" keyPoints="0;1;1" keyTimes="0;0.55;1" calcMode="linear" /></circle>
+</svg>
+<figcaption>
+  Blue tokens are requests and the green one is a streamed response. Every path ends
+  at the same loopback port, and oMLX checks the key on each one. phil&rsquo;s and
+  nate&rsquo;s keys work for inference only, so the dashboard and the admin API
+  refuse them.
+</figcaption>
+</figure>
+
+<!-- ======================================================= -->
+<h2 id="process">Process</h2>
+<figure class="diagram">
+<svg class="anim" viewBox="0 0 920 310" role="img" aria-labelledby="dB-t dB-d">
+  <title id="dB-t">Moving to one server, in order</title>
+  <desc id="dB-d">Row one, done once by steve with just daemon-install: render the plist as steve; stop the brew login agent; install and bootstrap the system daemon local.omlx; wait until the daemon's own process answers on 127.0.0.1:8000; run the origin guard. If the guard finds that oMLX answers without a key, tailnet serving is switched off. Row two, per user: just key-add mints a key; the user points their client at 127.0.0.1:8000 with it; the user stops their own oMLX server; just check shows one server.</desc>
+  <defs>
+    <marker id="dB-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0,0 L10,5 L0,10 z" /></marker>
+  </defs>
+  <text class="lane" x="10" y="20">YOU, ONCE &mdash; just daemon-install</text>
+  <text class="lane" x="10" y="200">PER USER</text>
+
+  <path class="flow req" d="M170,64 H188" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M350,64 H368" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M530,64 H548" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M710,64 H728" marker-end="url(#dB-arrow)" />
+  <g class="node"><rect x="10" y="34" width="160" height="62" rx="8" /><text x="90" y="60" text-anchor="middle">render the plist</text><text class="sub" x="90" y="78" text-anchor="middle">as you; refuses keyless</text></g>
+  <g class="node"><rect x="190" y="34" width="160" height="62" rx="8" /><text x="270" y="60" text-anchor="middle">retire the agent</text><text class="sub mono" x="270" y="78" text-anchor="middle">brew services stop</text></g>
+  <g class="node acc"><rect x="370" y="34" width="160" height="62" rx="8" /><text x="450" y="60" text-anchor="middle">install, bootstrap</text><text class="sub mono" x="450" y="78" text-anchor="middle">system/local.omlx</text></g>
+  <g class="node"><rect x="550" y="34" width="160" height="62" rx="8" /><text x="630" y="60" text-anchor="middle">wait for its pid</text><text class="sub" x="630" y="78" text-anchor="middle">on :8000, /health 200</text></g>
+  <g class="node ok"><rect x="730" y="34" width="180" height="62" rx="8" /><text x="820" y="60" text-anchor="middle">origin guard</text><text class="sub" x="820" y="78" text-anchor="middle">no key must get 401</text></g>
+  <path class="flow bad" d="M820,96 V128" />
+  <g class="node bad pulse"><rect x="700" y="130" width="210" height="44" rx="8" /><text x="805" y="150" text-anchor="middle">if not: just down</text><text class="sub" x="805" y="166" text-anchor="middle">tailnet serving off, exit 1</text></g>
+
+  <path class="flow req" d="M210,244 H232" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M440,244 H462" marker-end="url(#dB-arrow)" />
+  <path class="flow req" d="M670,244 H692" marker-end="url(#dB-arrow)" />
+  <g class="node acc"><rect x="10" y="214" width="200" height="62" rx="8" /><text x="110" y="240" text-anchor="middle">just key-add phil</text><text class="sub" x="110" y="258" text-anchor="middle">43 characters, shown once</text></g>
+  <g class="node"><rect x="234" y="214" width="206" height="62" rx="8" /><text x="337" y="240" text-anchor="middle">phil: OMLX_KEY, then</text><text class="sub mono" x="337" y="258" text-anchor="middle">127.0.0.1:8000/v1</text></g>
+  <g class="node"><rect x="464" y="214" width="206" height="62" rx="8" /><text x="567" y="240" text-anchor="middle">phil stops own server</text><text class="sub" x="567" y="258" text-anchor="middle">oMLX.app, no auto start</text></g>
+  <g class="node ok"><rect x="694" y="214" width="216" height="62" rx="8" /><text x="802" y="240" text-anchor="middle">just check</text><text class="sub" x="802" y="258" text-anchor="middle">no &ldquo;another oMLX server&rdquo;</text></g>
+
+  <circle class="packet req" r="5">
+    <animateMotion dur="9s" repeatCount="indefinite" path="M90,64 H820" keyPoints="0;1;1" keyTimes="0;0.45;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="1;1;0;0" keyTimes="0;0.46;0.47;1" />
+  </circle>
+  <circle class="packet req" r="5" opacity="0">
+    <animateMotion dur="9s" repeatCount="indefinite" path="M110,244 H802" keyPoints="0;0;1;1" keyTimes="0;0.5;0.95;1" calcMode="linear" />
+    <animate attributeName="opacity" dur="9s" repeatCount="indefinite" values="0;0;1;1;0" keyTimes="0;0.5;0.51;0.95;1" />
+  </circle>
+</svg>
+<figcaption>
+  The red branch is the safety net. <code>tailscale serve</code> keeps forwarding while
+  the daemon is swapped in, so if the new server ever came up without a key, tailnet
+  devices would reach it. <code>daemon-install</code>, <code>daemon-restart</code> and
+  <code>daemon-uninstall</code> all end with the guard, and all turn serving off when
+  it fails.
+</figcaption>
+</figure>
+
+<!-- ======================================================= -->
+<h2 id="doit">Doing it</h2>
+
+<h3 id="admin">You, once</h3>
+<ol class="steps">
+  <li>
+    <strong>Install the daemon.</strong> It asks for your password once. When it
+    finishes, it runs <code>just check</code>, and the <code>host</code> line should
+    read <em>&ldquo;oMLX is the system daemon local.omlx, running as steve&rdquo;</em>.
+<pre><code>cd ~/dev/eretzutz/dev/docs/omlx
+just daemon-install</code></pre>
+  </li>
+  <li>
+    <strong>Prove it still gets the GPU.</strong> MLX runs on Metal. A daemon is a
+    different launch context from a login agent, so complete one real prompt before
+    you rely on it:
+<pre><code>just key-add steve-test
+export OMLX_KEY='&lt;the key it printed&gt;'
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Authorization: Bearer $OMLX_KEY" -H 'Content-Type: application/json' \
+  -d '{"model":"Qwen3.8-27B-oQ4e-mtp","messages":[{"role":"user","content":"say hi"}],"max_tokens":16}'
+tail -n 40 /opt/homebrew/var/log/omlx.log   <span class="cm"># look for Metal errors</span>
+just key-rm steve-test</code></pre>
+    If it fails, <code>just daemon-uninstall</code> puts the login agent back exactly
+    as it was.
+  </li>
+  <li>
+    <strong>Mint a key for each other user</strong>, and pass it on privately. It is
+    shown once.
+<pre><code>just key-add phil
+just key-add nate</code></pre>
+  </li>
+  <li>
+    <strong>Remove the leftover folder</strong> from the first attempt. It is empty
+    and owned by root:
+<pre><code>sudo rmdir /Users/Shared/omlx/models /Users/Shared/omlx</code></pre>
+  </li>
+</ol>
+
+<h3 id="users">Each other user</h3>
+<p>In their own login, for example phil:</p>
+<ol class="steps">
+  <li>
+    <strong>Point their tools at your server</strong> with their key:
+<pre><code>export OMLX_KEY='&lt;phil&rsquo;s key&gt;'
+<span class="cm"># any OpenAI-compatible client</span>
+base URL   http://127.0.0.1:8000/v1
+<span class="cm"># Claude Code: needs its own copy of clients/claude-omlx.sh (steve&rsquo;s home is not readable)</span>
+OMLX_HOST=127.0.0.1 claude-omlx</code></pre>
+  </li>
+  <li>
+    <strong>Stop their own server.</strong> In their <code>oMLX.app</code>, stop the
+    server and turn off starting it at launch (<code>server.auto_start_on_launch</code>
+    in <em>their</em> <code>~/.omlx/settings.json</code>). Or quit the app and remove
+    it from Login Items. Once they have switched, they can delete any models in their
+    own <code>~/.omlx/models</code>. We could not see what is there, because their
+    homes are private too.
+  </li>
+  <li>
+    <strong>New models</strong> come from you, through the dashboard. Downloading a
+    model is an admin action, and sub keys cannot use the admin API.
+  </li>
+</ol>
+<p>
+  Afterwards, <code>just check</code> stops printing <em>&ldquo;phil runs another
+  oMLX server&rdquo;</em>.
+</p>
+
+<!-- ======================================================= -->
+<h2 id="tooling">Tooling: just, Python, Rust</h2>
+<p>
+  This folder already had <strong>just</strong> as the front end and a stdlib
+  <strong>Python</strong> script for checks, both running on the system
+  <code>python3</code> (3.9). This plan adds one more script. <strong>Rust</strong> is
+  not needed: nothing here sits in the request path. oMLX already checks keys, and
+  <code>omlx-gate</code> in <a href="cf-tunnel.html">cf-tunnel.html</a> is still
+  needed only for a public hostname.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Recipe</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>just daemon-install</code></td><td>Renders the plist as you, runs <code>brew services stop omlx</code>, installs <code>/Library/LaunchDaemons/local.omlx.plist</code> (root:wheel 0644), bootstraps it into the system domain, waits until <em>the daemon&rsquo;s own pid</em> listens on <code>127.0.0.1:8000</code> and <code>/health</code> answers, then runs the origin guard. If the guard fails, it runs <code>just down</code>.</td></tr>
+    <tr><td><code>just daemon-restart</code></td><td><code>launchctl kickstart -k system/local.omlx</code>, then the same wait and guard. Run it after <code>brew upgrade omlx</code>, because brew restarts only the jobs it manages.</td></tr>
+    <tr><td><code>just daemon-uninstall</code></td><td>Boots the daemon out, deletes its plist, runs <code>brew services start omlx</code>, then waits and runs the guard. This is the undo.</td></tr>
+    <tr><td><code>just key-add NAME</code></td><td>Generates a 43-character key and creates it through oMLX&rsquo;s admin API with the main key. The running server stays the only writer of <code>settings.json</code>. Prints the key once and refuses a name that already has a key.</td></tr>
+    <tr><td><code>just key-list</code> / <code>key-rm NAME</code></td><td>Lists keys by name, fingerprint and date, never the key itself. Revokes by name.</td></tr>
+    <tr><td><code>just check</code></td><td>The existing posture checks, plus <code>host</code> (which launchd job answers on the origin, run as whom, with which settings) and <code>servers</code> (every other oMLX server on the Mac, for any user).</td></tr>
+    <tr><td><code>just status</code> / <code>url</code></td><td>Now also show the launchd job and the on-Mac URL.</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  <code>scripts/host.py</code> holds the plist, wait and key logic. It imports its
+  helpers from <code>scripts/check.py</code>, so both use the same settings path,
+  which they resolve the way oMLX does: <code>OMLX_BASE_PATH</code>, then the
+  app&rsquo;s bootstrap file, then <code>~/.omlx</code>. The plist starts from
+  Homebrew&rsquo;s keg plist, so the program path and <code>PATH</code> follow the
+  formula. Everything that decides <em>who</em> oMLX runs as is set explicitly:
+  <code>UserName</code>, <code>HOME</code>, <code>USER</code>, and
+  <code>OMLX_BASE_PATH</code>. The rendered plist has no
+  <code>LimitLoadToSessionType</code>, which applies only to agents. The label is
+  not <code>sh.brew.omlx</code>, because <code>brew services</code> would treat a job
+  with that label as its own.
+</p>
+<p>
+  The plist is rendered for your account on purpose. If <code>host.py plist</code> is
+  run as root, it refuses. It also refuses to render a plist for settings that have
+  no main key or have key checks turned off. That way the daemon cannot be made to
+  start a keyless server at boot.
+</p>
+<p>
+  Why not <code>sudo brew services start --sudo-service-user steve omlx</code>?
+  Homebrew 7.0.15 does support it, and it sets <code>UserName</code>, but it sets
+  neither <code>HOME</code> nor <code>OMLX_BASE_PATH</code>. That would leave the
+  settings path to launchd&rsquo;s defaults, and the settings path is the one thing
+  that must not be wrong here.
+</p>
+
+<!-- ======================================================= -->
+<h2 id="verified">What is verified</h2>
+<div class="phase">
+  <p class="status"><em>Verified 20 Nov 2026, on the Mac Studio, without sudo:</em></p>
+  <ul>
+    <li><code>just check</code> passes. The new <code>host</code> line reports the login agent (pid 81077) and the reboot gap. The <code>servers</code> lines name phil (pid 1290, <code>127.0.0.1:8002</code>) and nate (pid 6507, <code>127.0.0.1:8003</code>).</li>
+    <li><code>host.py plist</code> renders a plist that passes <code>plutil -lint</code>, with <code>UserName steve</code>, <code>HOME /Users/steve</code> and <code>OMLX_BASE_PATH /Users/steve/.omlx</code>.</li>
+    <li>A full key round trip on the live server. <code>key-add</code> created a 43-character key. With it, <code>/v1/models</code> returned 200 and listed the three models. The admin API returned 401 for it. A second key with the same name was refused. After <code>key-rm</code>, the key got 401. Afterwards <code>settings.json</code> was intact: same size, still mode 600, no keys left behind.</li>
+    <li><code>host.py wait</code> reports the running agent at once, and fails on a job that does not exist. It works under <code>just</code> too.</li>
+    <li>One quirk found along the way. When started by <code>just</code>, <code>netstat</code> lists no TCP sockets at all (Darwin 27.2, just 1.59), so under <code>just check</code> the other servers appear without their ports. They are found by process title. The origin&rsquo;s own process is found with <code>lsof</code>, which is not affected. A simulated <code>netstat</code> failure was also tested: it produces no false FAIL.</li>
+  </ul>
+  <p class="done-when"><strong>Not yet verified, because it needs your password:</strong>
+  <code>daemon-install</code> itself, the GPU under the daemon (step 2 above), a reboot
+  with someone other than you logging in first, and phil and nate switching over.</p>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="first">What the first attempt got wrong</h2>
+<p>
+  This is kept here so nobody brings these steps back. Each one was checked against
+  oMLX 0.8.0&rsquo;s source or the Mac itself.
+</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Step</th><th>What actually happens</th></tr></thead>
+  <tbody>
+    <tr><td><code>just config-shared</code>: set <code>"model_path"</code> in <code>~/.omlx/settings.json</code></td><td><span class="tag bad">no effect</span> oMLX reads the model folder from <code>model.model_dirs</code> (<code>settings.py</code>), <code>OMLX_MODEL_DIR</code>, or <code>--model-dir</code>. A top-level <code>model_path</code> is ignored, and it is dropped the next time oMLX saves its settings. The recipe also rewrote the file holding the API key in place, with no restart afterwards. Removed.</td></tr>
+    <tr><td>Copy the Homebrew plist into <code>/Library/LaunchDaemons</code></td><td><span class="tag bad">opens the tailnet</span> With no <code>UserName</code>, oMLX runs as root and reads <code>/var/root/.omlx/settings.json</code>, which has no key. With no key on a loopback bind, oMLX accepts every request (<code>server.py</code>, <code>verify_api_key</code>). <code>tailscale serve</code> was already forwarding, and <code>just up</code>&rsquo;s guard would not run again. The login agent would also have stayed loaded, so two jobs would have competed for one port. The source path <code>/Users/steve/.launchd/</code> does not exist, and <code>launchctl load</code> is deprecated.</td></tr>
+    <tr><td><code>sudo chown -R staff:staff /Users/Shared/omlx</code>, <code>chmod -R 775</code></td><td><span class="tag bad">wrong</span> There is no user named <code>staff</code>. A recursive 775 would mark every weight file executable. The folder that exists is <code>root:staff 775</code> and empty. With one server, it is not needed at all.</td></tr>
+    <tr><td>&ldquo;Run <code>just check</code> to prove it&rdquo;</td><td><span class="tag unk">proves nothing here</span> At the time, <code>check</code> tested only the key and tailnet posture, none of the shared setup. It now also checks the launchd job and the other servers.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="limits">Limits and risks</h2>
+<ul>
+  <li><strong>One queue.</strong> Everyone shares <code>max_concurrent_requests: 8</code> and the memory guard, so one user&rsquo;s long prefill can slow down another user&rsquo;s reply. That is the trade for not holding duplicate weights.</li>
+  <li><strong>Everything the server does, it does as you.</strong> Inference does not touch files, but MCP tools would: they would run with your file access on behalf of any key holder. No MCP config is set today (<code>mcp.config_path: null</code>). Decide before you add one.</li>
+  <li><strong>Every local user is a loopback peer.</strong> oMLX&rsquo;s wrong-key lockout does not apply to them. If <code>skip_api_key_verification</code> were ever turned on, every user of this Mac and every tailnet device would get inference and the dashboard with no key. <code>just check</code> fails if that happens, and <code>host.py plist</code> refuses to render.</li>
+  <li><strong>FileVault is on.</strong> After a reboot nothing runs until someone unlocks the disk at the login window. After that, the daemon starts no matter who unlocked it.</li>
+  <li><strong>Sleep.</strong> A daemon does not keep the Mac awake. System sleep is still 1 minute, held off only by assertions; that is the open question in <a href="cf-tunnel.html#open">cf-tunnel.html</a>.</li>
+  <li><strong>Upgrades.</strong> After <code>brew upgrade omlx</code>, the old version keeps serving until <code>just daemon-restart</code>.</li>
+  <li><strong>Your own <code>oMLX.app</code></strong> is also running. If it ever starts a server of its own on port 8000, the daemon cannot bind the port. <code>just check</code> reports this as <em>&ldquo;the system daemon local.omlx is not what answers&rdquo;</em>.</li>
+</ul>
+
+<!-- ======================================================= -->
+<h2 id="files">Files</h2>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Path</th><th>State</th></tr></thead>
+  <tbody>
+    <tr><td><code>docs/omlx/justfile</code></td><td><span class="tag ok">changed</span> Adds the daemon and key recipes. <code>config-shared</code> is removed; <code>status</code>, <code>url</code> and <code>check</code> are extended.</td></tr>
+    <tr><td><code>docs/omlx/scripts/host.py</code></td><td><span class="tag ok">new</span> Plist, wait, key-add, key-list, key-rm. Stdlib only, Python 3.9.</td></tr>
+    <tr><td><code>docs/omlx/scripts/check.py</code></td><td><span class="tag ok">changed</span> Resolves the settings path the way oMLX does. Adds the <code>host</code> and <code>servers</code> checks.</td></tr>
+    <tr><td><code>/Library/LaunchDaemons/local.omlx.plist</code></td><td><span class="tag unk">not yet</span> Written by <code>just daemon-install</code>.</td></tr>
+    <tr><td><code>~/Library/LaunchAgents/sh.brew.omlx.plist</code></td><td><span class="tag unk">until install</span> Removed by <code>brew services stop omlx</code> during install, and put back by <code>daemon-uninstall</code>.</td></tr>
+    <tr><td><code>/Users/Shared/omlx</code></td><td><span class="tag bad">to remove</span> Empty, root-owned, left by the first attempt.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ======================================================= -->
+<h2 id="open">Open questions</h2>
+<ul>
+  <li><strong>A service account instead of yours?</strong> A dedicated account such as <code>_omlx</code> would keep the server, and any future tools, out of your home folder. It would need its own settings and the 126&nbsp;GB of models moved to a folder it owns. That is the one case where a shared models folder comes back. It is not worth doing until MCP tools or more users arrive.</li>
+  <li><strong>Should phil&rsquo;s and nate&rsquo;s devices reach it over the tailnet?</strong> Today the tailnet is yours alone. Letting their devices in means sharing this Mac with their tailnet accounts and restricting them to port 8000 in the access rules. The keys already work over that path.</li>
+  <li><strong>Power settings:</strong> still yours to decide, as above.</li>
+</ul>
+
+</main>
+
+<!-- ================= RIGHT: at a glance ================= -->
+<aside class="rail right" aria-label="At a glance">
+  <h2>At a glance</h2>
+
+  <div class="card">
+    <h3>For every user</h3>
+    <dl>
+      <dt>URL</dt><dd><code>http://127.0.0.1:8000/v1</code></dd>
+      <dt>Key</dt><dd>their own, from <code>just key-add NAME</code></dd>
+      <dt>Admin</dt><dd>main key, you only</dd>
+      <dt>Models</dt><dd>3 served; new ones through you</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>The daemon <span class="tag unk">to install</span></h3>
+    <dl>
+      <dt>Label</dt><dd><code>local.omlx</code></dd>
+      <dt>Plist</dt><dd><code>/Library/LaunchDaemons/local.omlx.plist</code></dd>
+      <dt>Runs as</dt><dd><code>steve</code></dd>
+      <dt>Settings</dt><dd><code>/Users/steve/.omlx</code></dd>
+      <dt>Log</dt><dd><code>/opt/homebrew/var/log/omlx.log</code></dd>
+      <dt>Undo</dt><dd><code>just daemon-uninstall</code></dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Servers on this Mac</h3>
+    <dl>
+      <dt>Today</dt><dd>3: <code>:8000</code> you, <code>:8002</code> phil, <code>:8003</code> nate</dd>
+      <dt>Plan</dt><dd>1: <code>:8000</code>, everyone</dd>
+      <dt>Memory</dt><dd>96&nbsp;GiB; models 16, 19, 91&nbsp;GB</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Run</h3>
+    <dl>
+      <dt>Daemon</dt><dd><code>daemon-install</code>, <code>-restart</code>, <code>-uninstall</code></dd>
+      <dt>Keys</dt><dd><code>key-add</code>, <code>key-list</code>, <code>key-rm</code></dd>
+      <dt>Tailnet</dt><dd><code>up</code>, <code>down</code>, <code>url</code></dd>
+      <dt>Look</dt><dd><code>status</code>, <code>check</code></dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Still yours to do</h3>
+    <ul>
+      <li><code>just daemon-install</code></li>
+      <li>one real prompt through the daemon (GPU)</li>
+      <li><code>just key-add phil</code>, <code>nate</code></li>
+      <li>phil and nate: switch, stop their servers</li>
+      <li><code>sudo rmdir</code> the empty shared folder</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Diagram legend</h3>
+    <div class="legend">
+      <span><i class="swatch" style="background: var(--req)"></i>request, setup step, 27B weights</span>
+      <span><i class="swatch" style="background: var(--res)"></i>response, gemma weights</span>
+      <span><i class="swatch" style="background: var(--bad)"></i>duplicate copy, stopped, fail-safe</span>
+      <span><i class="swatch" style="background: var(--unk)"></i>oMLX</span>
+      <span><i class="swatch" style="background: var(--ok)"></i>a check</span>
+    </div>
+  </div>
+</aside>
+
+</div>
+
+<script>
+  (() => {
+    const links = new Map(
+      [...document.querySelectorAll('.left nav a[href^="#"]')].map((a) => [a.getAttribute("href").slice(1), a]),
+    );
+    const targets = [...links.keys()].map((id) => document.getElementById(id)).filter(Boolean);
+    let current = null;
+    const mark = (id) => {
+      if (id === current) return;
+      current = id;
+      links.forEach((a, key) => a.setAttribute("aria-current", String(key === id)));
+    };
+    const spy = () => {
+      const line = window.innerHeight * 0.25;
+      let active = targets[0];
+      for (const t of targets) if (t.getBoundingClientRect().top <= line) active = t;
+      if (active) mark(active.id);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      document.getElementById("progress").style.transform = `scaleX(${max > 0 ? window.scrollY / max : 0})`;
+    };
+    addEventListener("scroll", spy, { passive: true });
+    addEventListener("resize", spy);
+    spy();
+
+    const btn = document.getElementById("anim-toggle");
+    const svgs = [...document.querySelectorAll("svg.anim")];
+    const setPaused = (paused) => {
+      document.body.classList.toggle("paused", paused);
+      svgs.forEach((s) => (paused ? s.pauseAnimations() : s.unpauseAnimations()));
+      btn.setAttribute("aria-pressed", String(paused));
+      btn.textContent = paused ? "Play diagrams" : "Pause diagrams";
+    };
+    btn.addEventListener("click", () => setPaused(btn.getAttribute("aria-pressed") !== "true"));
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) setPaused(true);
+  })();
+</script>
+</body>
+</html>

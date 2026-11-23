@@ -17,6 +17,11 @@
 - agents: clients/claude-omlx.sh (Claude Code) and clients/opencode.json (opencode) point at
   that URL with a key from $OMLX_KEY; both answered a test prompt through the tailnet IP. The Cloudflare tunnel plan is kept below, deferred until a caller outside
   the tailnet exists.
+- UPDATE 20 Nov 2026 (evening): the same server is now planned as the one oMLX for every user
+  of this Mac (shared-model-host.html): a system LaunchDaemon local.omlx running as steve
+  (just daemon-install, not yet run: needs sudo), and a sub key per user or device
+  (just key-add NAME, tested on the live server). The live-route sections below are updated to
+  match; the deferred Cloudflare plan is left as it was written.
 -->
 <!doctype html>
 <html lang="en">
@@ -315,7 +320,7 @@
       <td><strong>Staying up</strong><br /><span class="tag unk">check</span></td>
       <td>oMLX is a launchd agent with <code>KeepAlive</code>; it starts at login.</td>
       <td>System sleep is set to 1 minute and is only being held off by <code>caffeinate</code> assertions; <code>autorestart</code> is off.</td>
-      <td><strong>Now:</strong> <code>tailscaled</code> is a boot-time daemon and keeps the serve config; oMLX appears at login. The power-settings decision is still yours (<a href="#open">open questions</a>). <strong>Deferred:</strong> two more launchd agents (gate, tunnel).</td>
+      <td><strong>Now:</strong> <code>tailscaled</code> is a boot-time daemon and keeps the serve config; oMLX appears at login, until <code>just daemon-install</code> makes it a boot-time daemon too (<a href="shared-model-host.html">shared-model-host.html</a>). The power-settings decision is still yours (<a href="#open">open questions</a>). <strong>Deferred:</strong> two more launchd agents (gate, tunnel).</td>
     </tr>
   </tbody>
 </table>
@@ -346,7 +351,7 @@
     <tr><td>Who can reach it</td><td>Devices on your tailnet: one user, five machines. Funnel is off, there is no DNS record and no open port, so nothing on the public internet can.</td></tr>
     <tr><td>Forwarding</td><td><code>tailscaled</code> (Homebrew 1.104.7, a boot-time daemon) forwards tailnet TCP port 8000 to <code>127.0.0.1:8000</code>. A plain TCP forward, not Serve&rsquo;s HTTP proxy: the proxy answers only for the Mac&rsquo;s tailnet name and returned 404 to a request addressed to the tailnet IP. The config is stored by <code>tailscaled</code> and survives restarts.</td></tr>
     <tr><td>Encryption</td><td>WireGuard, device to device. The URL is <code>http</code> because the tailnet does not have HTTPS certificates enabled; the traffic between devices is encrypted either way (<a href="#open">open question</a> on switching to <code>https</code>).</td></tr>
-    <tr><td>oMLX</td><td>Unchanged: still bound to <code>127.0.0.1:8000</code>, still the launchd agent <code>sh.brew.omlx</code>, still requires a key. The dashboard is at <code>/admin</code> on the same URL.</td></tr>
+    <tr><td>oMLX</td><td>Still bound to <code>127.0.0.1:8000</code>, still requires a key. It runs as the launchd agent <code>sh.brew.omlx</code> until <code>just daemon-install</code> moves it to the system daemon <code>local.omlx</code>, running as you with the same settings, so it is up from boot and serves every user of this Mac (<a href="shared-model-host.html">shared-model-host.html</a>). The dashboard is at <code>/admin</code> on the same URL.</td></tr>
   </tbody>
 </table>
 </div>
@@ -415,7 +420,9 @@
 just down     <span class="cm"># tailscale serve --tcp=8000 off; oMLX keeps running locally</span>
 just status   <span class="cm"># the serve config and what listens on the origin port</span>
 just check    <span class="cm"># scripts/check.py: every check below, exit 1 on any failure</span>
-just url      <span class="cm"># the base URLs to give a client: by name, short, and by tailnet IP</span></code></pre>
+just url      <span class="cm"># the base URLs to give a client: on the Mac, by name, short, and by tailnet IP</span>
+just key-add NAME     <span class="cm"># mint a sub key for a device or user, printed once; key-list, key-rm NAME</span>
+just daemon-install   <span class="cm"># run oMLX as a system daemon owned by you (sudo); daemon-restart, daemon-uninstall</span></code></pre>
 <p>
   <code>scripts/check.py</code> tests behaviour, not settings: a request with no key
   must get 401 from the origin and from the tailnet URL, by name and by IP; the serve
@@ -423,6 +430,13 @@ just url      <span class="cm"># the base URLs to give a client: by name, short,
   must listen on loopback only. It then reads the settings to explain any failure,
   lists sub keys by fingerprint, and warns about sleep. <code>just up</code> runs the
   origin half first and refuses to serve if oMLX would answer without a key.
+</p>
+<p>
+  The key and daemon recipes, <code>scripts/host.py</code>, and the two extra checks
+  (<code>host</code>: which launchd job serves the origin, and as whom;
+  <code>servers</code>: any other oMLX server on the Mac) came with
+  <a href="shared-model-host.html">shared-model-host.html</a>. The daemon recipes end with the same origin guard, and switch
+  tailnet serving off if it fails.
 </p>
 <div class="phase">
   <p class="status"><em>Verified 20 Nov 2026 from the Mac itself, by full name, short
@@ -459,7 +473,7 @@ tailscale dns status | head -4  <span class="cm"># "Tailscale DNS: enabled"? if 
 
 <h3>Still to do, by you</h3>
 <ul>
-  <li><strong>Mint a sub key for the MacBook</strong> in the oMLX dashboard, 32 characters or more (<a href="#agents">how</a>), and one for each other device. Until then a remote device would have to carry the main key, which is also the admin credential. <code>just check</code> warns while there are none.</li>
+  <li><strong>Mint a sub key for the MacBook</strong> with <code>just key-add macbook</code> (43 characters, printed once), and one for each other device. Until then a remote device would have to carry the main key, which is also the admin credential. <code>just check</code> warns while there are none.</li>
   <li><strong>Set the agents up on the MacBook</strong> with that key: source <code>clients/claude-omlx.sh</code>, copy <code>clients/opencode.json</code>. It reaches the server by tailnet IP today; its name lookup is still to sort out, or to sidestep with the IP.</li>
   <li><strong>Decide the power settings.</strong> System sleep is set to 1 minute and is held off only by <code>caffeinate</code> assertions. When the Mac sleeps, the URL stops answering.</li>
 </ul>
@@ -467,7 +481,7 @@ tailscale dns status | head -4  <span class="cm"># "Tailscale DNS: enabled"? if 
 <h3>Limits to know</h3>
 <ul>
   <li><strong>The loopback caveats below still apply, to a small audience.</strong> <code>tailscaled</code> connects to oMLX over loopback, so oMLX&rsquo;s wrong-key lockout does not apply to tailnet devices, and if <code>skip_api_key_verification</code> were switched on, every tailnet device would get inference and the dashboard with no key. With five devices that are all yours this is acceptable; <code>just check</code> is how you confirm it has not changed. If the tailnet ever gains other users, restrict who may reach this Mac&rsquo;s port 8000 in the tailnet access rules first.</li>
-  <li><strong>After a reboot the URL answers 502 until you log in.</strong> <code>tailscaled</code> starts at boot; oMLX is a login agent.</li>
+  <li><strong>After a reboot the URL answers 502 until you log in.</strong> <code>tailscaled</code> starts at boot; oMLX is a login agent. <code>just daemon-install</code> removes this gap (<a href="shared-model-host.html">shared-model-host.html</a>).</li>
   <li><strong>The whole server is served, dashboard included.</strong> That is deliberate here: it is how you administer oMLX from another device.</li>
   <li><strong>To undo:</strong> <code>just down</code>. Nothing else was changed.</li>
 </ul>
@@ -602,7 +616,7 @@ curl -s -H "Authorization: Bearer $OMLX_KEY" http://100.72.79.31:8000/v1/models<
   <tbody>
     <tr><td>Host</td><td>Mac Studio, Apple M5 Ultra, 96&nbsp;GB, macOS 27.2</td></tr>
     <tr><td>oMLX</td><td>0.8.0 from Homebrew (<code>jundot/omlx/omlx</code>), package at <code>/opt/homebrew/Cellar/omlx/0.8.0/libexec</code>; also <code>/Applications/oMLX.app</code> and the <code>~/.omlx/bin/omlx</code> wrapper</td></tr>
-    <tr><td>Supervisor</td><td>launchd agent <code>sh.brew.omlx</code> (<code>~/Library/LaunchAgents/sh.brew.omlx.plist</code>): <code>omlx serve</code>, <code>RunAtLoad</code>, <code>KeepAlive</code>, log at <code>/opt/homebrew/var/log/omlx.log</code></td></tr>
+    <tr><td>Supervisor</td><td>launchd agent <code>sh.brew.omlx</code> (<code>~/Library/LaunchAgents/sh.brew.omlx.plist</code>): <code>omlx serve</code>, <code>RunAtLoad</code>, <code>KeepAlive</code>, log at <code>/opt/homebrew/var/log/omlx.log</code>. To be replaced by the system daemon <code>local.omlx</code> (<code>/Library/LaunchDaemons/local.omlx.plist</code>, <code>UserName</code> steve, same program, settings and log) by <code>just daemon-install</code>.</td></tr>
     <tr><td>Listener</td><td><code>127.0.0.1:8000</code> only</td></tr>
     <tr><td>Auth settings</td><td><code>~/.omlx/settings.json</code>: main <code>api_key</code> set (20 characters), <code>sub_keys</code> empty, <code>skip_api_key_verification</code> false, <code>allow_unauthenticated_inference</code> false</td></tr>
     <tr><td>Serving settings</td><td><code>sse_keepalive_mode: chunk</code>, <code>max_concurrent_requests: 8</code>, <code>max_request_body_size: 512MB</code>, <code>cors_origins: ["*"]</code>, <code>mcp.expose_tools: true</code> with no MCP config</td></tr>
@@ -1109,7 +1123,7 @@ ingress:
   sub keys, the power decision.</em></p>
   <ul>
     <li><code>scripts/preflight.py</code>, origin checks only, and the <code>justfile</code> skeleton with <code>check-deps</code> and <code>preflight</code>.</li>
-    <li>Mint sub keys in the oMLX dashboard, on the Mac: one per remote client, plus one named <code>smoke</code>. <code>just key-new</code> prints a 43-character URL-safe random key to paste in. The main key is not handed to any remote client.</li>
+    <li>Mint sub keys in the oMLX dashboard, on the Mac: one per remote client, plus one named <code>smoke</code>. <code>just key-add NAME</code> now exists: it mints a 43-character key and registers it through the admin API, so nothing is pasted. The main key is not handed to any remote client.</li>
     <li>Private access for your own devices: Tailscale Serve puts oMLX, dashboard included, at the Mac&rsquo;s <code>ts.net</code> name for the tailnet only. This is also the remote-admin path for good (D8). The loopback caveats in <a href="#findings">the findings</a> apply here too, to an audience of your own five machines.</li>
     <li>Decide the power settings (<a href="#open">open question</a>); <code>preflight</code> warns until system sleep is off.</li>
   </ul>
@@ -1413,8 +1427,8 @@ ingress:
       <dt>URL</dt><dd><code>http://steves-mac-studio:8000/v1</code></dd>
       <dt>By IP</dt><dd><code>http://100.72.79.31:8000/v1</code></dd>
       <dt>Reach</dt><dd>your tailnet only; Funnel off</dd>
-      <dt>Origin</dt><dd><code>127.0.0.1:8000</code>, oMLX 0.8.0, untouched</dd>
-      <dt>Run</dt><dd><code>just up</code>, <code>down</code>, <code>status</code>, <code>check</code>, <code>url</code></dd>
+      <dt>Origin</dt><dd><code>127.0.0.1:8000</code>, oMLX 0.8.0, same bind and settings</dd>
+      <dt>Run</dt><dd><code>just up</code>, <code>down</code>, <code>status</code>, <code>check</code>, <code>url</code>; keys and daemon in <a href="shared-model-host.html">shared-model-host.html</a></dd>
       <dt>Undo</dt><dd><code>just down</code></dd>
     </dl>
   </div>
@@ -1422,7 +1436,7 @@ ingress:
   <div class="card">
     <h3>Connect an agent</h3>
     <dl>
-      <dt>Key</dt><dd><code>export OMLX_KEY=…</code> (a sub key per device)</dd>
+      <dt>Key</dt><dd><code>export OMLX_KEY=…</code> (a sub key per device: <code>just key-add NAME</code>)</dd>
       <dt>Claude</dt><dd><code>source clients/claude-omlx.sh</code>, then <code>claude-omlx</code></dd>
       <dt>opencode</dt><dd>copy <code>clients/opencode.json</code></dd>
       <dt>Model</dt><dd><code>Qwen3.8-27B-oQ4e-mtp</code>, 262K context</dd>
@@ -1433,7 +1447,8 @@ ingress:
   <div class="card">
     <h3>Still yours to do</h3>
     <ul>
-      <li>mint a sub key for the MacBook, then one per device</li>
+      <li><code>just key-add macbook</code>, then one per device</li>
+      <li><code>just daemon-install</code>, so oMLX is up from boot</li>
       <li>set the agents up on the MacBook (works by IP; its name lookup is open)</li>
       <li>decide the power settings</li>
     </ul>
@@ -1471,8 +1486,8 @@ ingress:
   <div class="card">
     <h3>Tooling</h3>
     <dl>
-      <dt>just</dt><dd>exists: <code>up</code>, <code>down</code>, <code>status</code>, <code>check</code>, <code>url</code></dd>
-      <dt>Python</dt><dd>exists: <code>scripts/check.py</code> (stdlib, 3.9). Deferred: render, smoke, edge</dd>
+      <dt>just</dt><dd>exists: <code>up</code>, <code>down</code>, <code>status</code>, <code>check</code>, <code>url</code>, <code>key-add</code>/<code>-list</code>/<code>-rm</code>, <code>daemon-install</code>/<code>-restart</code>/<code>-uninstall</code></dd>
+      <dt>Python</dt><dd>exists: <code>scripts/check.py</code>, <code>scripts/host.py</code> (stdlib, 3.9). Deferred: render, smoke, edge</dd>
       <dt>Clients</dt><dd>exists: <code>clients/claude-omlx.sh</code>, <code>clients/opencode.json</code></dd>
       <dt>Rust</dt><dd>not involved now. Deferred: <code>omlx-gate</code></dd>
     </dl>
